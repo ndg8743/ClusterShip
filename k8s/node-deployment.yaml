@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ship-config
+data:
+  # red ship
+  red-x: "3"
+  red-y: "0"
+  red-size: "5"
+  red-health: "5"
+  red-latency: "60"
+  
+  # blue ship
+  blue-x: "7"
+  blue-y: "2"
+  blue-size: "4"
+  blue-health: "4"
+  blue-latency: "80"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: red-ship
+  labels:
+    app: red-ship
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: red-ship
+  template:
+    metadata:
+      labels:
+        app: red-ship
+    spec:
+      containers:
+      - name: node
+        image: clustership-node:latest
+        imagePullPolicy: Never
+        env:
+        - name: NODE_ID
+          value: "red-1"
+        - name: X
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: red-x
+        - name: Y
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: red-y
+        - name: SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: red-size
+        - name: HEALTH
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: red-health
+        - name: LATENCY_MS
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: red-latency
+        - name: SERVER_URL
+          value: "ws://clustership-server:8080/ws/battleship"
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blue-ship
+  labels:
+    app: blue-ship
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blue-ship
+  template:
+    metadata:
+      labels:
+        app: blue-ship
+    spec:
+      containers:
+      - name: node
+        image: clustership-node:latest
+        imagePullPolicy: Never
+        env:
+        - name: NODE_ID
+          value: "blue-1"
+        - name: X
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: blue-x
+        - name: Y
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: blue-y
+        - name: SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: blue-size
+        - name: HEALTH
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: blue-health
+        - name: LATENCY_MS
+          valueFrom:
+            configMapKeyRef:
+              name: ship-config
+              key: blue-latency
+        - name: SERVER_URL
+          value: "ws://clustership-server:8080/ws/battleship"
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+
