@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,38 @@ func (b *GameBoard) RenderBoardsDual() {
 		}
 	}
 
+	// now place each team's ships on their own board, after shots
+	// keep hits (X) visible; overwrite misses/water
+	for _, n := range nodes {
+		idLower := strings.ToLower(n.ID)
+		isRed := strings.Contains(idLower, "red")
+		isBlue := strings.Contains(idLower, "blue")
+		var target [][]rune
+		if isRed {
+			target = left
+		} else if isBlue {
+			target = right
+		} else {
+			continue
+		}
+		vertical := false
+		if len(n.Cells) >= 2 {
+			vertical = n.Cells[0][0] == n.Cells[1][0]
+		}
+		ch := '|'
+		if !vertical {
+			ch = '-'
+		}
+		for _, cell := range n.Cells {
+			x, y := cell[0], cell[1]
+			if y >= 0 && y < height && x >= 0 && x < width {
+				if target[y][x] != 'X' { // don't hide hits
+					target[y][x] = ch
+				}
+			}
+		}
+	}
+
 	alive := 0
 	total := len(nodes)
 	var latencies []time.Duration
@@ -91,6 +124,7 @@ func (b *GameBoard) RenderBoardsDual() {
 
 	// headings
 	fmt.Println("red-bot shots                         blue-bot shots")
+	fmt.Println("Legend: -=horizontal ship, |=vertical ship, X=hit, o=miss, ~=water")
 
 	// header rows (coords)
 	gap := "    "
