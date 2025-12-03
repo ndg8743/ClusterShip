@@ -57,7 +57,22 @@ func main() {
 	go red.Run(ctx)
 	go blue.Run(ctx)
 
-	// lil battle loop: bots take turns guessing cells till one dies
+	// Battle Loop Implementation Plan:
+	// 1. Battle loop: bots take turns guessing cells until one dies
+	// 2. Node architecture:
+	//    - Each node should maintain its own board state
+	//    - Master utility function that iterates through nodes to coordinate shooting
+	//    - Trigger communication to global node on each turn
+	// 3. Communication protocol:
+	//    - Communicate state when a hit occurs
+	//    - Update other nodes with hit/miss information
+	// 4. Hit strategy:
+	//    - If hit, implement "hit nearest neighbor" algorithm for follow-up shots
+	// 5. Board configuration:
+	//    - Scale to 100x100 board
+	//    - Add parameter for configurable number of boats
+	// 6. Scaling:
+	//    - Support game and nodes scaling to handle larger deployments
 	go func() {
 		turn := 0 // 0 = red, 1 = blue
 		seenRed := map[string]struct{}{}
