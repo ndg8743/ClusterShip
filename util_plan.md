@@ -1,52 +1,144 @@
-### Goal
-Run the board as the control plane, run each match as a short-lived “game” container that drives turns, and run each ship as its own pod that scales its in‑game stats from the hardware it actually gets in the cluster.
+# ClusterShip
 
-### Architecture
-- Board (control plane): a long‑lived service that owns truth for placements, health, turns, and exposes WebSocket for ship heartbeats and an HTTP API for attacks.
-- Game container (per match): a short job that alternates turns by calling the board’s attack API until the match ends.
-- Ship pods (one per ship): lightweight processes that connect to the board and periodically heartbeat. Each ship measures its own CPU allocation and network RTT to the board and derives its size, health, and latency from that.
+## Goal
+Run battleship game as distributed Kubernetes workload:
+- **Board**: Long-lived control plane service (Deployment)
+- **Game containers**: Short-lived Jobs that drive turn-based battles
+- **Ship pods**: One Deployment per ship, scaling stats from actual hardware allocation
 
-### How ships communicate with hardware
-- Each ship process reads its effective CPU allocation inside the pod (cpuset) and maps that to ship size and health, so pods with more CPUs get “bigger/healthier” ships.
-- Each ship measures RTT to the board’s health endpoint and uses that as its per‑message latency, simulating slower/faster links based on actual cluster/network conditions.
-- On its first heartbeat the ship includes its chosen size/health; the board accepts those initial values for that ship, assigns a non‑overlapping placement, and then remains authoritative thereafter.
+## Architecture
 
-### Kubernetes laIt
-- Board: one Deployment with a ClusterIP Service in a control‑plane namespace.
-- Match: one namespace (or a `game_id` routed to the board), with:
-  - Two ship Deployments (e.g., red and blue). I set different CPU requests/limits if I want asymmetric ships, which then flow into their size/health.
-  - One Job for the game container that drives turns by calling the board’s attack API and exits when a winner is decided.
+### Components
+- **Board (control plane)**
+  - Long-lived service owning game state (placements, health, turns)
+  - WebSocket endpoint for ship heartbeats
+  - HTTP API for attack commands
+  - Source: [`pkg/api/server.go`](pkg/api/server.go), [`pkg/game/gameboard.go`](pkg/game/gameboard.go)
 
-### Security and multi‑game support
-- Run separate namespaces per match or include a `game_id` so one board instance can partition many concurrent `GameBoard`s.
-- Add simple auth on the attack API so only the game container can fire shots.
-- Add liveness/readiness probes on the board; use resource requests/limits on ships and runner; consider NetworkPolicy to restrict access to the board.
-- Cap and validate the first‑sight size/health server‑side to prevent out‑of‑range values.
+- **Game container (per match)**
+  - Short-lived Job that alternates turns via board's attack API
+  - Exits when match ends (winner determined)
+  - Source: [`pkg/game/battle.go`](pkg/game/battle.go) - `BattleCoordinator`
 
-### Libaries
-- Go standard libraries already in the repo plus:
-  - `k8s.io/utils` (notably `cpuset`) to read the pod’s cpuset and derive available CPU count.
-  - Existing `github.com/gorilla/websocket` for ship heartbeats.
-- Kubernetes primitives:
-  - Deployment and Service for the board.
-  - Deployment per ship; Job for the game container.
-  - Namespaces for isolation; resource requests/limits; optionally CPUManager static policy if I want pinned CPUs to influence cpusets.
-  - ServiceAccount/RBAC and NetworkPolicy for basic security.
-- Ir existing code:
-  - `pkg/api/server.go` for WebSocket and attack HTTP endpoints.
-  - `pkg/game/gameboard.go` to accept client‑provided size/health on first sighting and to keep authoritative state.
-  - A small ship entrypoint binary that reads hardware and config from env and heartbeats to the board.
-  - A game‑runner entrypoint that alternates turns via the board’s HTTP API.
+- **Ship pods (one per ship)**
+  - Lightweight processes connecting to board via WebSocket
+  - Measure CPU allocation (cpuset) → maps to ship size/health
+  - Measure RTT to board → maps to per-message latency
+  - Source: [`pkg/game/node.go`](pkg/game/node.go) - `BattleshipNode`
 
-### Plan
-1) Split the demo: promote the board into its own long‑lived service; add an attack HTTP endpoint; leave WebSocket handler as‑is.  
-2) Ship process: add a small binary that reads cpuset CPU count and RTT to set size/health/latency, then connects via WebSocket and heartbeats.  
-3) Board behavior: on first heartbeat, accept size/health from the ship (with caps and defaults); keep board authoritative afterwards.  
-4) Game container: create a job that alternates red/blue turns by calling the board’s attack API until one ship is destroyed.  
-5) Containerize and deploy: board Deployment + Service; per‑match namespace with two ship Deployments and one game Job; tune CPU requests/limits to shape ships.  
-6) Hardening and scale: add probes, auth, resource policies, and per‑game isolation; optionally run multiple concurrent games by namespace or by `game_id`.  
+## Hardware Integration
 
-- Board runs as control plane with WebSocket and attack API.
-- Ships are pods; each ship reads cpusets and RTT to derive size/health/latency.
-- A game job drives turns and exits on game over.
-- I’ll use `k8s.io/utils` (cpuset), gorilla WebSocket, standard Go net/http, and core Kubernetes objects (Deployment, Service, Job, Namespace, RBAC, NetworkPolicy).
+### CPU Allocation → Ship Stats
+- Read pod's effective CPU allocation via [`k8s.io/utils/cpuset`](https://pkg.go.dev/k8s.io/utils/cpuset)
+- Map CPU count to ship size/health (more CPUs = bigger/healthier ships)
+- First heartbeat includes chosen size/health; board accepts and assigns placement
+- Board remains authoritative for health after initial registration
+
+### Network RTT → Latency
+- Measure RTT to board's `/healthz` endpoint
+- Use measured latency as per-message delay
+- Simulates slower/faster links based on actual cluster network conditions
+
+## Kubernetes Layout
+
+### Board Deployment
+- **Type**: Deployment with ClusterIP Service
+- **Namespace**: `clustership-control` (control-plane namespace)
+- **Endpoints**:
+  - `:8080/ws/battleship` - WebSocket for ship heartbeats
+  - `:8080/healthz` - Health check endpoint
+  - `:8080/attack` - HTTP API for game container attacks (to be added)
+
+### Per-Match Namespace
+- **Isolation**: One namespace per match (or `game_id` routing)
+- **Components**:
+  - Two ship Deployments (red/blue teams)
+    - Different CPU requests/limits for asymmetric ships
+    - CPU allocation flows into size/health stats
+  - One Job for game container
+    - Drives turns by calling board's attack API
+    - Exits when winner determined
+
+## Security & Multi-Game Support
+
+### Isolation
+- Separate namespaces per match OR `game_id` parameter for board partitioning
+- NetworkPolicy to restrict ship → board access
+- ServiceAccount/RBAC for pod permissions
+
+### API Security
+- Add authentication on attack API (only game container can fire shots)
+- Cap and validate initial size/health server-side (prevent out-of-range values)
+
+### Reliability
+- Liveness/readiness probes on board Deployment
+- Resource requests/limits on ships and game runner
+- Optional: CPUManager static policy for pinned CPUs → cpuset influence
+
+## Libraries & Dependencies
+
+### Go Packages
+- **WebSocket**: [`github.com/gorilla/websocket`](https://pkg.go.dev/github.com/gorilla/websocket) - Already in use
+- **Kubernetes utils**: [`k8s.io/utils/cpuset`](https://pkg.go.dev/k8s.io/utils/cpuset) - For CPU allocation reading
+- **Standard library**: `net/http`, `context`, `sync` - Already in use
+
+### Kubernetes Primitives
+- **Deployment**: Board service, ship pods
+- **Service**: ClusterIP for board
+- **Job**: Game container runner
+- **Namespace**: Per-match isolation
+- **Resource requests/limits**: CPU allocation control
+- **NetworkPolicy**: Network isolation
+- **ServiceAccount/RBAC**: Security
+
+## Implementation Plan
+
+1. **Split board into service**
+   - Promote board to long-lived Deployment
+   - Add HTTP attack endpoint (`POST /attack`)
+   - Keep WebSocket handler as-is
+   - Files: [`pkg/api/server.go`](pkg/api/server.go)
+
+2. **Ship process binary**
+   - Create ship entrypoint that:
+     - Reads cpuset CPU count via `k8s.io/utils/cpuset`
+     - Measures RTT to board `/healthz`
+     - Sets size/health/latency from hardware
+     - Connects via WebSocket and heartbeats
+   - Files: [`pkg/game/node.go`](pkg/game/node.go) - extend `BattleshipNode`
+
+3. **Board first-sight behavior**
+   - Accept size/health from ship on first heartbeat
+   - Apply caps and defaults server-side
+   - Board owns health/placement after registration
+   - Files: [`pkg/game/gameboard.go`](pkg/game/gameboard.go) - `HandleNodeUpdate`
+
+4. **Game container Job**
+   - Create Job that:
+     - Alternates red/blue turns via board's attack API
+     - Uses existing `BattleCoordinator` logic
+     - Exits when `AliveCount() <= 1`
+   - Files: [`pkg/game/battle.go`](pkg/game/battle.go)
+
+5. **Containerize & deploy**
+   - Build Docker images for board, ship, game-runner
+   - Create Kubernetes manifests:
+     - Board Deployment + Service
+     - Per-match namespace with 2 ship Deployments + 1 game Job
+   - Tune CPU requests/limits to shape ship characteristics
+
+6. **Hardening & scale**
+   - Add probes (liveness/readiness)
+   - Add auth to attack API
+   - Add resource policies
+   - Support multiple concurrent games (namespace or `game_id`)
+
+## References
+
+- **Kubernetes Deployments**: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/
+- **Kubernetes Jobs**: https://kubernetes.io/docs/concepts/workloads/controllers/job/
+- **Kubernetes Services**: https://kubernetes.io/docs/concepts/services-networking/service/
+- **NetworkPolicy**: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+- **CPU Manager**: https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/
+- **Go WebSocket**: https://pkg.go.dev/github.com/gorilla/websocket
+- **K8s Utils**: https://pkg.go.dev/k8s.io/utils
