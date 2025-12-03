@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -15,15 +14,29 @@ import (
 	"clustership/pkg/game"
 )
 
-// main starts the HTTP server, ASCII display loop, and one demo node.
+// main starts the ClusterShip battle game.
+// Architecture:
+//   - GameBoard: central authority for ship state and attacks
+//   - BattleCoordinator: manages turn-based battle loop with smart targeting
+//   - BattleshipNodes: simulated ships that report heartbeats via WebSocket
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	rand.Seed(time.Now().UnixNano())
 
-	board := game.NewGameBoard(10, 10)
-	server := api.NewServer(board)
+	// Configure game parameters (supports up to 100x100 boards)
+	config := game.GameConfig{
+		BoardWidth:  10,  // Change to 100 for large-scale battles
+		BoardHeight: 10,  // Change to 100 for large-scale battles
+		BoatCount:   1,   // Boats per team
+		TurnDelay:   400 * time.Millisecond,
+	}
 
+	// Create game board with configurable size
+	board := game.NewGameBoardWithBoats(config.BoardWidth, config.BoardHeight, config.BoatCount)
+
+	// Setup HTTP server for WebSocket connections
+	server := api.NewServer(board)
 	mux := http.NewServeMux()
 	server.Routes(mux)
 
@@ -40,80 +53,102 @@ func main() {
 		}
 	}()
 
-	// Start display loop
+	// Start ASCII display loop
 	stopDisplay := make(chan struct{})
 	go board.DisplayLoop(stopDisplay)
 
-	// place 2 ships at diff coords (we keep simple: one cell per ship)
-	x1, y1 := rand.Intn(10), rand.Intn(10)
-	x2, y2 := rand.Intn(10), rand.Intn(10)
-	for x2 == x1 && y2 == y1 {
-		x2, y2 = rand.Intn(10), rand.Intn(10)
-	}
+	// Place ships at random non-overlapping coordinates
+	positions := generateShipPositions(config.BoardWidth, config.BoardHeight, 2)
 
-	// Start two nodes (stationary)
-	red := game.NewBattleshipNode("red-1", x1, y1, 5, 5, 60*time.Millisecond, "ws://localhost:8080/ws/battleship")
-	blue := game.NewBattleshipNode("blue-1", x2, y2, 4, 4, 80*time.Millisecond, "ws://localhost:8080/ws/battleship")
+	// Start ship nodes (they send heartbeats to the board)
+	red := game.NewBattleshipNode("red-1", positions[0].X, positions[0].Y, 5, 5,
+		60*time.Millisecond, "ws://localhost:8080/ws/battleship")
+	blue := game.NewBattleshipNode("blue-1", positions[1].X, positions[1].Y, 4, 4,
+		80*time.Millisecond, "ws://localhost:8080/ws/battleship")
 	go red.Run(ctx)
 	go blue.Run(ctx)
 
-	// Battle Loop Implementation Plan:
-	// 1. Battle loop: bots take turns guessing cells until one dies
-	// 2. Node architecture:
-	//    - Each node should maintain its own board state
-	//    - Master utility function that iterates through nodes to coordinate shooting
-	//    - Trigger communication to global node on each turn
-	// 3. Communication protocol:
-	//    - Communicate state when a hit occurs
-	//    - Update other nodes with hit/miss information
-	// 4. Hit strategy:
-	//    - If hit, implement "hit nearest neighbor" algorithm for follow-up shots
-	// 5. Board configuration:
-	//    - Scale to 100x100 board
-	//    - Add parameter for configurable number of boats
-	// 6. Scaling:
-	//    - Support game and nodes scaling to handle larger deployments
-	go func() {
-		turn := 0 // 0 = red, 1 = blue
-		seenRed := map[string]struct{}{}
-		seenBlue := map[string]struct{}{}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+	// Create battle coordinator with smart targeting
+	coordinator := game.NewBattleCoordinator(board, config)
 
-			if board.AliveCount() <= 1 {
-				return
-			}
+	// Register bots - each maintains its own board state for targeting
+	coordinator.RegisterBot("red-bot", "red")
+	coordinator.RegisterBot("blue-bot", "blue")
 
-			x, y := rand.Intn(10), rand.Intn(10)
-			key := fmt.Sprintf("%d,%d", x, y)
-			if turn == 0 {
-				if _, ok := seenRed[key]; ok {
-					time.Sleep(50 * time.Millisecond)
-					continue
-				}
-				seenRed[key] = struct{}{}
-				board.Attack(x, y, "red-bot")
-				turn = 1
-			} else {
-				if _, ok := seenBlue[key]; ok {
-					time.Sleep(50 * time.Millisecond)
-					continue
-				}
-				seenBlue[key] = struct{}{}
-				board.Attack(x, y, "blue-bot")
-				turn = 0
-			}
-			time.Sleep(400 * time.Millisecond)
-		}
-	}()
+	// Run battle loop in background
+	// Bots take turns, using hit-nearest-neighbor algorithm for follow-up shots
+	go coordinator.Run(ctx)
 
+	// Wait for shutdown signal
 	<-ctx.Done()
 	close(stopDisplay)
+
+	// Graceful shutdown
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancelShutdown()
 	_ = srv.Shutdown(shutdownCtx)
+
+	// Print final stats
+	printFinalStats(coordinator)
+}
+
+// shipPosition holds coordinates for ship placement.
+type shipPosition struct {
+	X, Y int
+}
+
+// generateShipPositions creates n non-overlapping positions on the board.
+func generateShipPositions(width, height, count int) []shipPosition {
+	positions := make([]shipPosition, 0, count)
+	used := make(map[string]bool)
+
+	for len(positions) < count {
+		x := rand.Intn(width)
+		y := rand.Intn(height)
+		key := keyFor(x, y)
+
+		if !used[key] {
+			used[key] = true
+			positions = append(positions, shipPosition{X: x, Y: y})
+		}
+	}
+	return positions
+}
+
+// keyFor creates a string key from coordinates.
+func keyFor(x, y int) string {
+	// Simple concatenation for map keys
+	buf := make([]byte, 0, 8)
+	buf = appendInt(buf, x)
+	buf = append(buf, ',')
+	buf = appendInt(buf, y)
+	return string(buf)
+}
+
+// appendInt appends integer to byte slice without fmt import.
+func appendInt(b []byte, n int) []byte {
+	if n == 0 {
+		return append(b, '0')
+	}
+	if n < 0 {
+		b = append(b, '-')
+		n = -n
+	}
+	var digits [10]byte
+	i := len(digits)
+	for n > 0 {
+		i--
+		digits[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return append(b, digits[i:]...)
+}
+
+// printFinalStats outputs end-game statistics.
+func printFinalStats(coordinator *game.BattleCoordinator) {
+	log.Println("=== BATTLE COMPLETE ===")
+	for _, stat := range coordinator.GetBotStats() {
+		log.Printf("%s (%s): %d shots, %d hits, %d kills",
+			stat.ID, stat.Team, stat.ShotsFired, stat.HitsLanded, stat.ShipsSunk)
+	}
 }

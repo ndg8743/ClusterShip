@@ -26,6 +26,7 @@ type NodeView struct {
 type GameBoard struct {
 	Width       int
 	Height      int
+	BoatCount   int // configurable boats per team
 	Battleships map[string]*NodeView
 
 	recentUpdates []string
@@ -34,15 +35,37 @@ type GameBoard struct {
 	mu            sync.RWMutex
 }
 
-// NewGameBoard: make a board with width/height
+// NewGameBoard creates a board with width/height (supports up to 100x100).
 func NewGameBoard(width, height int) *GameBoard {
+	return NewGameBoardWithBoats(width, height, 1)
+}
+
+// NewGameBoardWithBoats creates a board with configurable dimensions and boat count.
+func NewGameBoardWithBoats(width, height, boatCount int) *GameBoard {
+	// Clamp dimensions to valid range (1-100)
+	width = clampInt(width, 1, 100)
+	height = clampInt(height, 1, 100)
+	boatCount = clampInt(boatCount, 1, 10)
+
 	return &GameBoard{
 		Width:         width,
 		Height:        height,
+		BoatCount:     boatCount,
 		Battleships:   make(map[string]*NodeView),
 		recentUpdates: make([]string, 0, 32),
 		shots:         make(map[string]map[string]bool),
 	}
+}
+
+// clampInt limits v to the inclusive range [min, max].
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 // HandleNodeUpdate: merge a node heartbeat, record latency
