@@ -15,10 +15,76 @@ func (b *GameBoard) DisplayLoop(stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C:
-			b.RenderBoardsDual()
+			if b.Width > 20 || b.Height > 20 {
+				b.RenderCompact()
+			} else {
+				b.RenderBoardsDual()
+			}
 		case <-stop:
 			return
 		}
+	}
+}
+
+// RenderCompact shows stats-only view for large boards (>20x20)
+func (b *GameBoard) RenderCompact() {
+	width, height, nodes, recent := b.Snapshot()
+	shots := b.ShotsSnapshot()
+	turn := b.LastTurn()
+
+	// Count stats per team
+	redAlive, blueAlive := 0, 0
+	redHits, blueHits := 0, 0
+	redMiss, blueMiss := 0, 0
+
+	for _, n := range nodes {
+		if !n.IsDead {
+			if n.Team == "red" {
+				redAlive++
+			} else if n.Team == "blue" {
+				blueAlive++
+			}
+		}
+	}
+
+	for k, hit := range shots["red-bot"] {
+		_ = k
+		if hit {
+			redHits++
+		} else {
+			redMiss++
+		}
+	}
+	for k, hit := range shots["blue-bot"] {
+		_ = k
+		if hit {
+			blueHits++
+		} else {
+			blueMiss++
+		}
+	}
+
+	fmt.Fprint(os.Stdout, "\033[H\033[2J")
+	fmt.Println("=== Distributed Battleship Cluster (Compact Mode) ===")
+	fmt.Printf("Board: %dx%d | Turn: %s\n\n", width, height, turn)
+
+	fmt.Println("RED TEAM                    BLUE TEAM")
+	fmt.Printf("Ships alive: %d              Ships alive: %d\n", redAlive, blueAlive)
+	fmt.Printf("Hits: %d                     Hits: %d\n", redHits, blueHits)
+	fmt.Printf("Misses: %d                   Misses: %d\n", redMiss, blueMiss)
+
+	fmt.Println("\nShip Status:")
+	for _, n := range nodes {
+		status := "ALIVE"
+		if n.IsDead {
+			status = "DEAD"
+		}
+		fmt.Printf("  %s: HP %d/%d [%s] lat=%s\n", n.ID, n.Health, n.Size, status, n.Latency.Truncate(time.Millisecond))
+	}
+
+	fmt.Println("\nRecent Updates:")
+	for i := len(recent) - 1; i >= 0; i-- {
+		fmt.Println(recent[i])
 	}
 }
 
