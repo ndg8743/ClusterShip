@@ -8,21 +8,35 @@ import (
 	"time"
 )
 
+// TargetingMode defines how bots select attack coordinates.
+type TargetingMode int
+
+const (
+	// TargetingRandom uses pure random shooting
+	TargetingRandom TargetingMode = iota
+	// TargetingHitNeighbor targets adjacent cells after a hit (smart targeting)
+	TargetingHitNeighbor
+)
+
 // GameConfig holds configurable game parameters.
 type GameConfig struct {
-	BoardWidth  int           // Board width (default 10, max 100)
-	BoardHeight int           // Board height (default 10, max 100)
-	BoatCount   int           // Number of boats per team
-	TurnDelay   time.Duration // Delay between turns
+	BoardWidth    int           // Board width (default 100, max 100)
+	BoardHeight   int           // Board height (default 100, max 100)
+	BoatCount     int           // Number of boats per team (legacy, use ShipSizes)
+	ShipSizes     []int         // Sizes for each ship (e.g., [4, 3, 2])
+	TurnDelay     time.Duration // Delay between turns
+	TargetingMode TargetingMode // Targeting strategy (default: TargetingHitNeighbor)
 }
 
 // DefaultConfig returns sensible defaults for a standard game.
 func DefaultConfig() GameConfig {
 	return GameConfig{
-		BoardWidth:  10,
-		BoardHeight: 10,
-		BoatCount:   1,
-		TurnDelay:   400 * time.Millisecond,
+		BoardWidth:    100,
+		BoardHeight:   100,
+		BoatCount:     3,
+		ShipSizes:     []int{4, 3, 2},
+		TurnDelay:     400 * time.Millisecond,
+		TargetingMode: TargetingHitNeighbor,
 	}
 }
 
@@ -142,9 +156,21 @@ func (bc *BattleCoordinator) executeTurn(bot *BotState) {
 	bc.broadcastTurnResult(bot, *target, hit, killedID)
 }
 
-// pickTarget chooses the next coordinate to attack.
-// Uses hit-nearest-neighbor strategy when there's an active hit.
+// pickTarget chooses the next coordinate to attack based on targeting mode.
 func (bc *BattleCoordinator) pickTarget(bot *BotState) *Coord {
+	switch bc.config.TargetingMode {
+	case TargetingRandom:
+		return bc.pickRandomTarget(bot)
+	case TargetingHitNeighbor:
+		return bc.pickSmartTarget(bot)
+	default:
+		return bc.pickSmartTarget(bot)
+	}
+}
+
+// pickSmartTarget uses hit-nearest-neighbor strategy.
+// When there's an active hit, it targets adjacent cells first.
+func (bc *BattleCoordinator) pickSmartTarget(bot *BotState) *Coord {
 	// Strategy 1: If we have queued neighbors from a hit, try those first
 	for len(bot.HitQueue) > 0 {
 		// Pop from queue
