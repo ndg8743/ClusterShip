@@ -58,6 +58,9 @@ func main() {
 			}
 			log.Printf("Created %s (%dx%d)", gi.ID, config.BoardWidth, config.BoardHeight)
 
+			// Start display loop for this game
+			go gi.Board.DisplayLoop(gi.StopDisplay)
+
 			// Spawn ships with game-specific WebSocket URL
 			spawnGameShips(ctx, gi.ID, "red", config.ShipSizes)
 			spawnGameShips(ctx, gi.ID, "blue", config.ShipSizes)
