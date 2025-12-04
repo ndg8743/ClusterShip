@@ -81,8 +81,8 @@ func (b *GameBoard) HandleNodeUpdate(update NodeStateMessage) {
 		b.Battleships[update.NodeID] = v
 		// first time we know about this node, board assigns canonical stats and placement
 		v.Team = deriveTeam(update.NodeID)
-		v.Size = 4
-		v.Health = 4
+		v.Size = update.Size
+		v.Health = update.Size // health equals size
 		v.IsDead = false
 		v.Cells = b.generateBoatPlacementLocked(v.Size)
 		v.CellHit = make(map[string]bool, v.Size)
