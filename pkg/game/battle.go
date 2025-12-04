@@ -112,8 +112,8 @@ func (bc *BattleCoordinator) Run(ctx context.Context) {
 		default:
 		}
 
-		// Check win condition
-		if bc.board.AliveCount() <= 1 {
+		// Check win condition: battle ends when either team has no ships left
+		if bc.board.TeamAliveCount("red") == 0 || bc.board.TeamAliveCount("blue") == 0 {
 			return
 		}
 

@@ -178,6 +178,19 @@ func (b *GameBoard) AliveCount() int {
 	return n
 }
 
+// TeamAliveCount returns how many ships are alive for a specific team
+func (b *GameBoard) TeamAliveCount(team string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	n := 0
+	for _, v := range b.Battleships {
+		if !v.IsDead && v.Team == team {
+			n++
+		}
+	}
+	return n
+}
+
 // Attack: do a shot at x,y. returns hit + killed id if any
 func (b *GameBoard) Attack(x, y int, by string) (bool, string) {
 	b.mu.Lock()
