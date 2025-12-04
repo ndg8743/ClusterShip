@@ -24,9 +24,9 @@ type GameInstance struct {
 	Config      GameConfig
 	Status      GameStatus
 	CreatedAt   time.Time
+	StopDisplay chan struct{}
 	ctx         context.Context
 	cancel      context.CancelFunc
-	stopDisplay chan struct{}
 }
 
 // GameManager manages multiple concurrent game instances
@@ -68,9 +68,9 @@ func (gm *GameManager) CreateGame(parentCtx context.Context, config GameConfig) 
 		Config:      config,
 		Status:      GameStatusPending,
 		CreatedAt:   time.Now(),
+		StopDisplay: make(chan struct{}),
 		ctx:         ctx,
 		cancel:      cancel,
-		stopDisplay: make(chan struct{}),
 	}
 
 	gm.games[id] = instance
@@ -96,7 +96,7 @@ func (gm *GameManager) DestroyGame(id string) error {
 	}
 
 	g.cancel()
-	close(g.stopDisplay)
+	close(g.StopDisplay)
 	delete(gm.games, id)
 	return nil
 }
