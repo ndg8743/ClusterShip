@@ -105,6 +105,16 @@ func (bc *BattleCoordinator) RegisterBot(id, team string) *BotState {
 
 // Run executes the battle loop until one team has no ships left.
 func (bc *BattleCoordinator) Run(ctx context.Context) {
+	// Wait for ships to connect before starting battle
+	for bc.board.TeamAliveCount("red") == 0 || bc.board.TeamAliveCount("blue") == 0 {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -112,7 +122,7 @@ func (bc *BattleCoordinator) Run(ctx context.Context) {
 		default:
 		}
 
-		// Check win condition: battle ends when either team has no ships left
+		// Check win condition
 		if bc.board.TeamAliveCount("red") == 0 || bc.board.TeamAliveCount("blue") == 0 {
 			return
 		}
