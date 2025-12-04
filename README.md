@@ -15,15 +15,17 @@ Distributed battleship game where ships run as independent nodes that connect vi
 
 ## Run
 ```powershell
-# Default: 100x100 board, 3 ships per team
+# Small board (visual display with ASCII grid)
+go run ./cmd/clustership-game --width=10 --height=10
+
+# Default: 100x100 board (compact stats display)
 go run ./cmd/clustership-game
 
-# Custom board size
-go run ./cmd/clustership-game --width=20 --height=20
-
 # Multiple concurrent games
-go run ./cmd/clustership-game --games=3
+go run ./cmd/clustership-game --games=3 --width=10 --height=10
 ```
+
+The game displays an ASCII grid showing both teams' boards side-by-side (for boards ≤20x20) or compact stats (for larger boards). Press `Ctrl+C` to stop.
 
 ### CLI Flags
 - `--width=100`: Board width (1-100)
