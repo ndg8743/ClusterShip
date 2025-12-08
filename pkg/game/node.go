@@ -20,6 +20,7 @@ type BattleshipNode struct {
 	Size    int
 	IsDead  bool
 	Latency time.Duration
+	Team    string // explicit team ("red" or "blue")
 
 	serverURL string
 	conn      *websocket.Conn
@@ -80,6 +81,7 @@ func (n *BattleshipNode) sendState(ctx context.Context) error {
 		Size:      n.Size,
 		IsDead:    n.IsDead,
 		Timestamp: time.Now().UTC(),
+		Team:      n.Team,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
