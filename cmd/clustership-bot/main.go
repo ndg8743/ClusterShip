@@ -60,10 +60,10 @@ type RemoteBot struct {
 
 // Run executes the battle loop until game over.
 func (b *RemoteBot) Run(ctx context.Context, delay time.Duration) {
-	// Wait for ships to connect
+	// Wait for game to be ready (all ships connected)
+	log.Println("waiting for game to be ready...")
 	for {
-		view := b.getView()
-		if view != nil && view.EnemyAlive > 0 {
+		if b.isGameReady() {
 			break
 		}
 		select {
@@ -72,6 +72,7 @@ func (b *RemoteBot) Run(ctx context.Context, delay time.Duration) {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+	log.Println("game ready, starting attacks")
 
 	for {
 		select {
@@ -87,12 +88,14 @@ func (b *RemoteBot) Run(ctx context.Context, delay time.Duration) {
 		}
 		if view.GameOver {
 			log.Printf("game over! winner: %s", view.Winner)
+			b.printFinalStats()
 			return
 		}
 
 		target := b.pickTarget(view)
 		if target == nil {
 			log.Println("no targets left")
+			b.printFinalStats()
 			return
 		}
 
@@ -107,6 +110,58 @@ func (b *RemoteBot) Run(ctx context.Context, delay time.Duration) {
 
 		time.Sleep(delay)
 	}
+}
+
+// isGameReady checks if the game is ready via /ready endpoint
+func (b *RemoteBot) isGameReady() bool {
+	url := fmt.Sprintf("%s/ready", b.server)
+	if b.gameID != "" {
+		url += "?game_id=" + b.gameID
+	}
+
+	resp, err := b.client.Get(url)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Ready bool `json:"ready"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false
+	}
+	return result.Ready
+}
+
+// printFinalStats fetches and displays final game stats
+func (b *RemoteBot) printFinalStats() {
+	url := fmt.Sprintf("%s/status", b.server)
+	if b.gameID != "" {
+		url += "?game_id=" + b.gameID
+	}
+
+	resp, err := b.client.Get(url)
+	if err != nil {
+		log.Printf("failed to fetch final stats: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var report game.GameReport
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		log.Printf("failed to decode stats: %v", err)
+		return
+	}
+
+	log.Println("=== FINAL GAME STATS ===")
+	log.Printf("Winner: %s", report.Winner)
+	log.Printf("Red: %d/%d ships survived", report.RedAlive, report.RedTotal)
+	log.Printf("Blue: %d/%d ships survived", report.BlueAlive, report.BlueTotal)
+	log.Printf("Total attacks: %d (hits: %d, misses: %d)",
+		report.Stats.TotalAttacks, report.Stats.TotalHits, report.Stats.TotalMisses)
+	log.Printf("Heartbeats: %d, Avg latency: %.2fms",
+		report.Stats.Heartbeats, report.Stats.AvgLatencyMs)
 }
 
 func (b *RemoteBot) pickTarget(view *game.BotView) *game.Coord {
