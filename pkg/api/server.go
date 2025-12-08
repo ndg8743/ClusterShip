@@ -52,6 +52,8 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/attack", s.AttackHandler)
 	mux.HandleFunc("/view", s.ViewHandler)
 	mux.HandleFunc("/stats", s.StatsHandler)
+	mux.HandleFunc("/ready", s.ReadyHandler)
+	mux.HandleFunc("/status", s.StatusHandler)
 }
 
 // BattleshipNodeHandler: upgrade to ws, read node state messages
@@ -86,7 +88,10 @@ func (s *Server) BattleshipNodeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upgrade failed", http.StatusBadRequest)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		board.HandleDisconnect(nodeID)
+	}()
 
 	for {
 		_, data, err := conn.ReadMessage()
@@ -217,4 +222,37 @@ func (s *Server) getBoard(gameID string) *game.GameBoard {
 		return nil
 	}
 	return s.Board
+}
+
+// ReadyHandler: GET /ready?game_id=Y returns whether game is ready
+func (s *Server) ReadyHandler(w http.ResponseWriter, r *http.Request) {
+	gameID := r.URL.Query().Get("game_id")
+
+	board := s.getBoard(gameID)
+	if board == nil {
+		http.Error(w, "game not found", http.StatusNotFound)
+		return
+	}
+
+	resp := struct {
+		Ready bool `json:"ready"`
+	}{Ready: board.GameReady()}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// StatusHandler: GET /status?game_id=Y returns complete game status
+func (s *Server) StatusHandler(w http.ResponseWriter, r *http.Request) {
+	gameID := r.URL.Query().Get("game_id")
+
+	board := s.getBoard(gameID)
+	if board == nil {
+		http.Error(w, "game not found", http.StatusNotFound)
+		return
+	}
+
+	report := board.GetGameReport()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
 }
