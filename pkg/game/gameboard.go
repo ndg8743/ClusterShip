@@ -24,24 +24,27 @@ type NodeView struct {
 
 // BoardStats tracks game and communication statistics.
 type BoardStats struct {
-	TotalAttacks   int            `json:"total_attacks"`
-	TotalHits      int            `json:"total_hits"`
-	TotalMisses    int            `json:"total_misses"`
-	AttacksByTeam  map[string]int `json:"attacks_by_team"`
-	HitsByTeam     map[string]int `json:"hits_by_team"`
-	Heartbeats     int            `json:"heartbeats"`
-	Connections    int            `json:"connections"`
-	AvgLatencyMs   float64        `json:"avg_latency_ms"`
-	latencySum     time.Duration
-	latencyCount   int
+	TotalAttacks      int            `json:"total_attacks"`
+	TotalHits         int            `json:"total_hits"`
+	TotalMisses       int            `json:"total_misses"`
+	AttacksByTeam     map[string]int `json:"attacks_by_team"`
+	HitsByTeam        map[string]int `json:"hits_by_team"`
+	Heartbeats        int            `json:"heartbeats"`
+	Connections       int            `json:"connections"`
+	ActiveConnections int            `json:"active_connections"`
+	Disconnections    int            `json:"disconnections"`
+	AvgLatencyMs      float64        `json:"avg_latency_ms"`
+	latencySum        time.Duration
+	latencyCount      int
 }
 
 // GameBoard: keeps grid size + all ships. reads/writes use a lock so no races
 type GameBoard struct {
-	Width       int
-	Height      int
-	BoatCount   int // configurable boats per team
-	Battleships map[string]*NodeView
+	Width                int
+	Height               int
+	BoatCount            int // configurable boats per team
+	ExpectedShipsPerTeam int // ships needed per team before game starts (0 = use BoatCount)
+	Battleships          map[string]*NodeView
 
 	recentUpdates []string
 	shots         map[string]map[string]bool // bot -> coord -> hit
@@ -97,9 +100,12 @@ func (b *GameBoard) HandleNodeUpdate(update NodeStateMessage) {
 	v, ok := b.Battleships[update.NodeID]
 	if !ok {
 		v = &NodeView{ID: update.NodeID}
-		b.Battleships[update.NodeID] = v
-		// first time we know about this node, board assigns canonical stats and placement
-		v.Team = deriveTeam(update.NodeID)
+		// Determine team: prefer explicit from message, fall back to derived
+		team := update.Team
+		if team == "" {
+			team = deriveTeam(update.NodeID)
+		}
+		v.Team = team
 		v.Size = update.Size
 		v.Health = update.Size // health equals size
 		v.IsDead = false
@@ -108,7 +114,9 @@ func (b *GameBoard) HandleNodeUpdate(update NodeStateMessage) {
 		if len(v.Cells) > 0 {
 			v.X, v.Y = v.Cells[0][0], v.Cells[0][1]
 		}
+		b.Battleships[update.NodeID] = v
 		b.stats.Connections++
+		b.stats.ActiveConnections++
 	}
 	// The board owns position/health after first sighting; only latency gets refreshed here.
 	v.LastUpdate = time.Now()
@@ -217,6 +225,132 @@ func (b *GameBoard) TeamAliveCount(team string) int {
 		}
 	}
 	return n
+}
+
+// TeamShipCount returns total ships registered for a team (alive or dead)
+func (b *GameBoard) TeamShipCount(team string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	n := 0
+	for _, v := range b.Battleships {
+		if v.Team == team {
+			n++
+		}
+	}
+	return n
+}
+
+// GameReady returns true if both teams have expected ships registered
+func (b *GameBoard) GameReady() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.gameReadyLocked()
+}
+
+// gameReadyLocked checks if game is ready (caller must hold lock)
+func (b *GameBoard) gameReadyLocked() bool {
+	expected := b.ExpectedShipsPerTeam
+	if expected <= 0 {
+		expected = b.BoatCount
+	}
+	redCount := 0
+	blueCount := 0
+	for _, ship := range b.Battleships {
+		if ship.Team == "red" {
+			redCount++
+		} else if ship.Team == "blue" {
+			blueCount++
+		}
+	}
+	return redCount >= expected && blueCount >= expected
+}
+
+// HandleDisconnect marks a ship as disconnected and updates stats
+func (b *GameBoard) HandleDisconnect(nodeID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.Battleships[nodeID]; ok {
+		if b.stats.ActiveConnections > 0 {
+			b.stats.ActiveConnections--
+		}
+		b.stats.Disconnections++
+	}
+}
+
+// GameReport represents complete game state for reporting
+type GameReport struct {
+	Ready        bool             `json:"ready"`
+	GameOver     bool             `json:"game_over"`
+	Winner       string           `json:"winner"`
+	RedAlive     int              `json:"red_alive"`
+	BlueAlive    int              `json:"blue_alive"`
+	RedTotal     int              `json:"red_total"`
+	BlueTotal    int              `json:"blue_total"`
+	Stats        BoardStats       `json:"stats"`
+	ShipStatuses []ShipStatusView `json:"ships"`
+}
+
+// ShipStatusView is a public view of ship status
+type ShipStatusView struct {
+	ID     string `json:"id"`
+	Team   string `json:"team"`
+	Health int    `json:"health"`
+	Size   int    `json:"size"`
+	IsDead bool   `json:"is_dead"`
+}
+
+// GetGameReport returns comprehensive game status for reporting
+func (b *GameBoard) GetGameReport() GameReport {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	status := GameReport{
+		Ready: b.gameReadyLocked(),
+		Stats: b.stats,
+	}
+	// Deep copy maps for stats
+	status.Stats.AttacksByTeam = make(map[string]int)
+	status.Stats.HitsByTeam = make(map[string]int)
+	for k, v := range b.stats.AttacksByTeam {
+		status.Stats.AttacksByTeam[k] = v
+	}
+	for k, v := range b.stats.HitsByTeam {
+		status.Stats.HitsByTeam[k] = v
+	}
+
+	for _, ship := range b.Battleships {
+		if ship.Team == "red" {
+			status.RedTotal++
+			if !ship.IsDead {
+				status.RedAlive++
+			}
+		} else if ship.Team == "blue" {
+			status.BlueTotal++
+			if !ship.IsDead {
+				status.BlueAlive++
+			}
+		}
+		status.ShipStatuses = append(status.ShipStatuses, ShipStatusView{
+			ID:     ship.ID,
+			Team:   ship.Team,
+			Health: ship.Health,
+			Size:   ship.Size,
+			IsDead: ship.IsDead,
+		})
+	}
+
+	// Determine winner only if game started
+	if status.Ready {
+		if status.RedAlive == 0 && status.BlueAlive > 0 {
+			status.GameOver = true
+			status.Winner = "blue"
+		} else if status.BlueAlive == 0 && status.RedAlive > 0 {
+			status.GameOver = true
+			status.Winner = "red"
+		}
+	}
+
+	return status
 }
 
 // Attack: do a shot at x,y. returns hit + killed id if any
@@ -471,24 +605,26 @@ func (b *GameBoard) GetBotView(botID string) BotView {
 		}
 	}
 
-	// Check game over
-	redAlive := 0
-	blueAlive := 0
-	for _, ship := range b.Battleships {
-		if !ship.IsDead {
-			if ship.Team == "red" {
-				redAlive++
-			} else {
-				blueAlive++
+	// Check game over only if game has started (both teams have ships)
+	if b.gameReadyLocked() {
+		redAlive := 0
+		blueAlive := 0
+		for _, ship := range b.Battleships {
+			if !ship.IsDead {
+				if ship.Team == "red" {
+					redAlive++
+				} else if ship.Team == "blue" {
+					blueAlive++
+				}
 			}
 		}
-	}
-	if redAlive == 0 && blueAlive > 0 {
-		view.GameOver = true
-		view.Winner = "blue"
-	} else if blueAlive == 0 && redAlive > 0 {
-		view.GameOver = true
-		view.Winner = "red"
+		if redAlive == 0 && blueAlive > 0 {
+			view.GameOver = true
+			view.Winner = "blue"
+		} else if blueAlive == 0 && redAlive > 0 {
+			view.GameOver = true
+			view.Winner = "red"
+		}
 	}
 
 	return view
