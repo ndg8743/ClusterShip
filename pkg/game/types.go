@@ -31,4 +31,5 @@ type NodeStateMessage struct {
 	Size      int       `json:"size"`
 	IsDead    bool      `json:"isDead"`
 	Timestamp time.Time `json:"timestamp"`
+	Team      string    `json:"team,omitempty"` // explicit team assignment
 }
