@@ -15,11 +15,12 @@ import (
 )
 
 var (
-	boardWidth  = flag.Int("width", 100, "Board width (1-100)")
-	boardHeight = flag.Int("height", 100, "Board height (1-100)")
-	boatCount   = flag.Int("boats", 3, "Boats per team")
-	listenAddr  = flag.String("addr", ":8080", "HTTP listen address")
-	showDisplay = flag.Bool("display", true, "Show board display")
+	boardWidth    = flag.Int("width", 100, "Board width (1-100)")
+	boardHeight   = flag.Int("height", 100, "Board height (1-100)")
+	boatCount     = flag.Int("boats", 3, "Boats per team")
+	expectedShips = flag.Int("expected-ships", 0, "Expected ships per team (0 = use boats)")
+	listenAddr    = flag.String("addr", ":8080", "HTTP listen address")
+	showDisplay   = flag.Bool("display", true, "Show board display")
 )
 
 // main runs the board as a standalone control plane service.
@@ -31,6 +32,9 @@ func main() {
 	defer cancel()
 
 	board := game.NewGameBoardWithBoats(*boardWidth, *boardHeight, *boatCount)
+	if *expectedShips > 0 {
+		board.ExpectedShipsPerTeam = *expectedShips
+	}
 	server := api.NewServer(board)
 
 	var stopDisplay chan struct{}
@@ -67,5 +71,6 @@ func main() {
 	stats := board.Stats()
 	log.Printf("=== FINAL STATS ===")
 	log.Printf("attacks: %d, hits: %d, misses: %d", stats.TotalAttacks, stats.TotalHits, stats.TotalMisses)
-	log.Printf("heartbeats: %d, connections: %d, avg latency: %.2fms", stats.Heartbeats, stats.Connections, stats.AvgLatencyMs)
+	log.Printf("heartbeats: %d, connections: %d (active: %d), avg latency: %.2fms",
+		stats.Heartbeats, stats.Connections, stats.ActiveConnections, stats.AvgLatencyMs)
 }
