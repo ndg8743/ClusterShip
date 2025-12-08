@@ -22,6 +22,20 @@ type NodeView struct {
 	CellHit    map[string]bool   // "x,y" -> hit
 }
 
+// BoardStats tracks game and communication statistics.
+type BoardStats struct {
+	TotalAttacks   int            `json:"total_attacks"`
+	TotalHits      int            `json:"total_hits"`
+	TotalMisses    int            `json:"total_misses"`
+	AttacksByTeam  map[string]int `json:"attacks_by_team"`
+	HitsByTeam     map[string]int `json:"hits_by_team"`
+	Heartbeats     int            `json:"heartbeats"`
+	Connections    int            `json:"connections"`
+	AvgLatencyMs   float64        `json:"avg_latency_ms"`
+	latencySum     time.Duration
+	latencyCount   int
+}
+
 // GameBoard: keeps grid size + all ships. reads/writes use a lock so no races
 type GameBoard struct {
 	Width       int
@@ -32,6 +46,7 @@ type GameBoard struct {
 	recentUpdates []string
 	shots         map[string]map[string]bool // bot -> coord -> hit
 	lastTurn      string
+	stats         BoardStats
 	mu            sync.RWMutex
 }
 
@@ -54,6 +69,10 @@ func NewGameBoardWithBoats(width, height, boatCount int) *GameBoard {
 		Battleships:   make(map[string]*NodeView),
 		recentUpdates: make([]string, 0, 32),
 		shots:         make(map[string]map[string]bool),
+		stats: BoardStats{
+			AttacksByTeam: make(map[string]int),
+			HitsByTeam:    make(map[string]int),
+		},
 	}
 }
 
@@ -89,10 +108,19 @@ func (b *GameBoard) HandleNodeUpdate(update NodeStateMessage) {
 		if len(v.Cells) > 0 {
 			v.X, v.Y = v.Cells[0][0], v.Cells[0][1]
 		}
+		b.stats.Connections++
 	}
 	// The board owns position/health after first sighting; only latency gets refreshed here.
 	v.LastUpdate = time.Now()
 	v.Latency = lat
+
+	// Track heartbeat stats
+	b.stats.Heartbeats++
+	b.stats.latencySum += lat
+	b.stats.latencyCount++
+	if b.stats.latencyCount > 0 {
+		b.stats.AvgLatencyMs = float64(b.stats.latencySum.Milliseconds()) / float64(b.stats.latencyCount)
+	}
 
 	b.pushRecentUpdate(update, lat)
 }
@@ -203,8 +231,12 @@ func (b *GameBoard) Attack(x, y int, by string) (bool, string) {
 		b.shots[by] = make(map[string]bool)
 	}
 
-	var hit *NodeView
+	// Track attack stats
 	shooterTeam := deriveTeam(by)
+	b.stats.TotalAttacks++
+	b.stats.AttacksByTeam[shooterTeam]++
+
+	var hit *NodeView
 	for _, v := range b.Battleships {
 		if v.IsDead {
 			continue
@@ -224,11 +256,15 @@ foundHit:
 
 	if hit == nil {
 		b.shots[by][key] = false
+		b.stats.TotalMisses++
 		b.pushRecentText(fmt.Sprintf("%s guess (%d,%d) -> miss", by, x, y))
 		return false, ""
 	}
 
 	b.shots[by][key] = true
+	b.stats.TotalHits++
+	b.stats.HitsByTeam[shooterTeam]++
+
 	cellKey := key
 	if !hit.CellHit[cellKey] {
 		hit.CellHit[cellKey] = true
@@ -350,5 +386,111 @@ func (b *GameBoard) generateBoatPlacementLocked(length int) [][2]int {
 			return cells
 		}
 	}
+}
+
+// Stats returns a copy of the current board statistics.
+func (b *GameBoard) Stats() BoardStats {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	s := b.stats
+	s.AttacksByTeam = make(map[string]int)
+	s.HitsByTeam = make(map[string]int)
+	for k, v := range b.stats.AttacksByTeam {
+		s.AttacksByTeam[k] = v
+	}
+	for k, v := range b.stats.HitsByTeam {
+		s.HitsByTeam[k] = v
+	}
+	return s
+}
+
+// BotView represents what a bot can see: own ships and attack results.
+type BotView struct {
+	Team       string              `json:"team"`
+	Width      int                 `json:"width"`
+	Height     int                 `json:"height"`
+	OwnShips   []ShipView          `json:"own_ships"`
+	EnemyAlive int                 `json:"enemy_alive"`
+	Attacks    map[string]bool     `json:"attacks"` // "x,y" -> hit
+	GameOver   bool                `json:"game_over"`
+	Winner     string              `json:"winner"`
+}
+
+// ShipView is a bot's view of one of its own ships.
+type ShipView struct {
+	ID     string   `json:"id"`
+	Health int      `json:"health"`
+	Size   int      `json:"size"`
+	IsDead bool     `json:"is_dead"`
+	Cells  [][2]int `json:"cells"`
+}
+
+// GetBotView returns what a specific bot/team can see.
+func (b *GameBoard) GetBotView(botID string) BotView {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	team := deriveTeam(botID)
+	view := BotView{
+		Team:    team,
+		Width:   b.Width,
+		Height:  b.Height,
+		Attacks: make(map[string]bool),
+	}
+
+	// Copy own ships
+	for _, ship := range b.Battleships {
+		if ship.Team == team {
+			sv := ShipView{
+				ID:     ship.ID,
+				Health: ship.Health,
+				Size:   ship.Size,
+				IsDead: ship.IsDead,
+				Cells:  make([][2]int, len(ship.Cells)),
+			}
+			copy(sv.Cells, ship.Cells)
+			view.OwnShips = append(view.OwnShips, sv)
+		}
+	}
+
+	// Count enemy ships alive
+	enemyTeam := "blue"
+	if team == "blue" {
+		enemyTeam = "red"
+	}
+	for _, ship := range b.Battleships {
+		if ship.Team == enemyTeam && !ship.IsDead {
+			view.EnemyAlive++
+		}
+	}
+
+	// Copy attack results for this bot
+	if attacks, ok := b.shots[botID]; ok {
+		for k, v := range attacks {
+			view.Attacks[k] = v
+		}
+	}
+
+	// Check game over
+	redAlive := 0
+	blueAlive := 0
+	for _, ship := range b.Battleships {
+		if !ship.IsDead {
+			if ship.Team == "red" {
+				redAlive++
+			} else {
+				blueAlive++
+			}
+		}
+	}
+	if redAlive == 0 && blueAlive > 0 {
+		view.GameOver = true
+		view.Winner = "blue"
+	} else if blueAlive == 0 && redAlive > 0 {
+		view.GameOver = true
+		view.Winner = "red"
+	}
+
+	return view
 }
 
