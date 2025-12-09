@@ -60,10 +60,9 @@ func NewGameBoard(width, height int) *GameBoard {
 
 // NewGameBoardWithBoats creates a board with configurable dimensions and boat count.
 func NewGameBoardWithBoats(width, height, boatCount int) *GameBoard {
-	// Clamp dimensions to valid range (1-100)
-	width = clampInt(width, 1, 100)
-	height = clampInt(height, 1, 100)
-	boatCount = clampInt(boatCount, 1, 10)
+	width = clampInt(width, 1, 1000)
+	height = clampInt(height, 1, 1000)
+	boatCount = clampInt(boatCount, 1, 500)
 
 	return &GameBoard{
 		Width:         width,
