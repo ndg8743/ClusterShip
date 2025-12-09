@@ -47,20 +47,22 @@ func (b *GameBoard) RenderCompact() {
 		}
 	}
 
-	for k, hit := range shots["red-bot"] {
-		_ = k
-		if hit {
-			redHits++
-		} else {
-			redMiss++
-		}
-	}
-	for k, hit := range shots["blue-bot"] {
-		_ = k
-		if hit {
-			blueHits++
-		} else {
-			blueMiss++
+	for botID, m := range shots {
+		isRed := strings.Contains(strings.ToLower(botID), "red")
+		for _, hit := range m {
+			if isRed {
+				if hit {
+					redHits++
+				} else {
+					redMiss++
+				}
+			} else {
+				if hit {
+					blueHits++
+				} else {
+					blueMiss++
+				}
+			}
 		}
 	}
 
@@ -133,16 +135,12 @@ func (b *GameBoard) RenderBoardsDual() {
 		}
 	}
 
-	// now place each team's ships on their own board, after shots
-	// keep hits (X) visible; overwrite misses/water
+	// place ships on their team's board
 	for _, n := range nodes {
-		idLower := strings.ToLower(n.ID)
-		isRed := strings.Contains(idLower, "red")
-		isBlue := strings.Contains(idLower, "blue")
 		var target [][]rune
-		if isRed {
+		if n.Team == "red" {
 			target = left
-		} else if isBlue {
+		} else if n.Team == "blue" {
 			target = right
 		} else {
 			continue
