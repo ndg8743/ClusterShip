@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: netflix-database
+  labels:
+    app: clustership
+    company: netflix
+    service: database
+spec:
+  serviceName: netflix-db
+  replicas: 1
+  selector:
+    matchLabels:
+      company: netflix
+      service: database
+  template:
+    metadata:
+      labels:
+        company: netflix
+        service: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "clustership"
+        - name: POSTGRES_DB
+          value: "netflix"
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "128Mi"

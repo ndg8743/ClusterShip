@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netflix-playback
+  labels:
+    app: clustership
+    company: netflix
+    service: playback
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: netflix
+      service: playback
+  template:
+    metadata:
+      labels:
+        company: netflix
+        service: playback
+    spec:
+      containers:
+      - name: playback-api
+        image: hashicorp/http-echo
+        args:
+        - "-text=Netflix Playback Service"
+        - "-listen=:8080"
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "50m"
+            memory: "32Mi"

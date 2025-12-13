@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-cloudfront-cdn
+  labels:
+    app: clustership
+    company: aws
+    service: cloudfront-cdn
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: aws
+      service: cloudfront-cdn
+  template:
+    metadata:
+      labels:
+        company: aws
+        service: cloudfront-cdn
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: "50m"
+            memory: "32Mi"

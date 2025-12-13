@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"clustership/pkg/config"
 	"clustership/pkg/game"
 	"fmt"
 	"time"
@@ -31,6 +32,23 @@ const (
 	StateBattle
 	StatePodView // view pod details for selected service
 	StateGameOver
+	// settings states
+	StateSettings      // main settings menu
+	StateSettingsBoard // board width/height
+	StateSettingsShips // ships, racks config
+	StateSettingsPods  // pods per rack
+	StateSettingsBots  // bot count, difficulty
+	StateSettingsK8s   // k8s integration options
+)
+
+// ViewLevel represents the hierarchical view depth (1-4 keys)
+type ViewLevel int
+
+const (
+	ViewMap  ViewLevel = 1 // overview map
+	ViewShip ViewLevel = 2 // ship/region detail
+	ViewRack ViewLevel = 3 // rack detail with pods
+	ViewYAML ViewLevel = 4 // yaml manifest
 )
 
 // AppModel is the main Bubble Tea model for the game
@@ -40,9 +58,16 @@ type AppModel struct {
 	width    int
 	height   int
 
+	// config
+	cfg *config.GameConfig
+
 	// menu state
 	menuCursor int
 	menuItems  []string
+
+	// settings state
+	settingsCursor int // cursor for settings menu/items
+	settingsItems  []string
 
 	// company selection
 	companies      []string
@@ -90,21 +115,39 @@ type AppModel struct {
 	debugMode        bool // show all ships (no fog of war)
 	serviceViewIndex int  // which company's services to display (0=player, 1+=enemies)
 
-	// pod view state
+	// view hierarchy (1-4 keys)
+	viewLevel        ViewLevel     // current view depth
+	selectedShipID   string        // ship selected for drill-down
+	selectedRackID   string        // rack selected for drill-down
+	selectedSvcID    string        // service selected for yaml view
+	selectedShip     *game.Region  // cached selected ship
+	selectedRack     *game.Rack    // cached selected rack
+	selectedService  *game.Service // cached selected service
+
+	// pod view state (legacy, kept for backward compat)
 	podViewCompany  *game.Company // company whose services are being viewed
 	podViewSvcIndex int           // selected service index
 }
 
 // NewAppModel creates a fresh game instance
 func NewAppModel() AppModel {
+	cfg, _ := config.Load()
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	cfg.Validate()
+
 	return AppModel{
-		state:     StateMenu,
-		styles:    DefaultStyles(),
-		menuItems: []string{"New Game", "Demo", "Settings", "Quit"},
-		companies: game.ListCompanies(),
-		viewW:     30, // viewport size
-		viewH:     20,
-		battleLog: make([]string, 0),
+		state:         StateMenu,
+		styles:        DefaultStyles(),
+		menuItems:     []string{"New Game", "Demo", "Settings", "Quit"},
+		settingsItems: []string{"Board", "Ships", "Pods", "Bots", "Kubernetes", "Save & Back"},
+		companies:     game.ListCompanies(),
+		cfg:           cfg,
+		viewW:         30, // viewport size
+		viewH:         20,
+		viewLevel:     ViewMap, // start at map view
+		battleLog:     make([]string, 0),
 		// Explicitly set game state to prevent carryover
 		demoMode:     false,
 		debugMode:    false,
@@ -169,6 +212,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePodView(msg)
 		case StateGameOver:
 			return m.updateGameOver(msg)
+		case StateSettings:
+			return m.updateSettings(msg)
+		case StateSettingsBoard:
+			return m.updateSettingsBoard(msg)
+		case StateSettingsShips:
+			return m.updateSettingsShips(msg)
+		case StateSettingsPods:
+			return m.updateSettingsPods(msg)
+		case StateSettingsBots:
+			return m.updateSettingsBots(msg)
+		case StateSettingsK8s:
+			return m.updateSettingsK8s(msg)
 		}
 	}
 
@@ -197,7 +252,8 @@ func (m AppModel) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateCompanySelect
 			m.companyCursor = 0
 		case 2: // Settings
-			// placeholder for settings
+			m.state = StateSettings
+			m.settingsCursor = 0
 		case 3: // Quit
 			return m, tea.Quit
 		}
@@ -428,6 +484,34 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StatePodView
 		}
 		return m, nil
+	// view hierarchy keys 1-4
+	case "1":
+		m.viewLevel = ViewMap
+		return m, nil
+	case "2":
+		m.viewLevel = ViewShip
+		// select first ship if none selected
+		if m.selectedShipID == "" && m.playerCompany != nil && len(m.playerCompany.Regions) > 0 {
+			m.selectedShipID = m.playerCompany.Regions[0].ID
+			m.selectedShip = m.playerCompany.Regions[0]
+		}
+		return m, nil
+	case "3":
+		m.viewLevel = ViewRack
+		// select first rack if none selected
+		if m.selectedRackID == "" && m.selectedShip != nil && len(m.selectedShip.Racks) > 0 {
+			m.selectedRackID = m.selectedShip.Racks[0].ID
+			m.selectedRack = m.selectedShip.Racks[0]
+		}
+		return m, nil
+	case "4":
+		m.viewLevel = ViewYAML
+		// select first service if none selected
+		if m.selectedSvcID == "" && m.playerCompany != nil && len(m.playerCompany.Services) > 0 {
+			m.selectedSvcID = m.playerCompany.Services[0].ID
+			m.selectedService = m.playerCompany.Services[0]
+		}
+		return m, nil
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	}
@@ -437,22 +521,45 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// handle navigation based on view level
 	switch msg.String() {
 	case "up", "k":
-		if m.cursor[1] > 0 {
-			m.cursor[1]--
+		switch m.viewLevel {
+		case ViewShip:
+			m.selectPrevShip()
+		case ViewRack:
+			m.selectPrevRack()
+		case ViewYAML:
+			m.selectPrevService()
+		default:
+			if m.cursor[1] > 0 {
+				m.cursor[1]--
+			}
 		}
 	case "down", "j":
-		if m.board != nil && m.cursor[1] < m.board.Height-1 {
-			m.cursor[1]++
+		switch m.viewLevel {
+		case ViewShip:
+			m.selectNextShip()
+		case ViewRack:
+			m.selectNextRack()
+		case ViewYAML:
+			m.selectNextService()
+		default:
+			if m.board != nil && m.cursor[1] < m.board.Height-1 {
+				m.cursor[1]++
+			}
 		}
 	case "left", "h":
-		if m.cursor[0] > 0 {
-			m.cursor[0]--
+		if m.viewLevel == ViewMap {
+			if m.cursor[0] > 0 {
+				m.cursor[0]--
+			}
 		}
 	case "right", "l":
-		if m.board != nil && m.cursor[0] < m.board.Width-1 {
-			m.cursor[0]++
+		if m.viewLevel == ViewMap {
+			if m.board != nil && m.cursor[0] < m.board.Width-1 {
+				m.cursor[0]++
+			}
 		}
 	// viewport panning with WASD
 	case "w":
@@ -537,6 +644,141 @@ func (m AppModel) updatePodView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "p", "q":
 		m.state = StateBattle
 		return m, nil
+	}
+	return m, nil
+}
+
+// updateSettings handles the main settings menu
+func (m AppModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.settingsCursor > 0 {
+			m.settingsCursor--
+		}
+	case "down", "j":
+		if m.settingsCursor < len(m.settingsItems)-1 {
+			m.settingsCursor++
+		}
+	case "enter", " ":
+		switch m.settingsCursor {
+		case 0:
+			m.state = StateSettingsBoard
+		case 1:
+			m.state = StateSettingsShips
+		case 2:
+			m.state = StateSettingsPods
+		case 3:
+			m.state = StateSettingsBots
+		case 4:
+			m.state = StateSettingsK8s
+		case 5: // save and back
+			m.cfg.Save()
+			m.state = StateMenu
+		}
+	case "esc":
+		m.state = StateMenu
+	}
+	return m, nil
+}
+
+// updateSettingsBoard handles board size config
+func (m AppModel) updateSettingsBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		m.cfg.BoardHeight += 5
+		m.cfg.Validate()
+	case "down", "j":
+		m.cfg.BoardHeight -= 5
+		m.cfg.Validate()
+	case "right", "l":
+		m.cfg.BoardWidth += 5
+		m.cfg.Validate()
+	case "left", "h":
+		m.cfg.BoardWidth -= 5
+		m.cfg.Validate()
+	case "esc", "enter":
+		m.state = StateSettings
+	}
+	return m, nil
+}
+
+// updateSettingsShips handles ships/racks config
+func (m AppModel) updateSettingsShips(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		m.cfg.ShipsPerPlayer++
+		m.cfg.Validate()
+	case "down", "j":
+		m.cfg.ShipsPerPlayer--
+		m.cfg.Validate()
+	case "right", "l":
+		m.cfg.RacksPerShip++
+		m.cfg.Validate()
+	case "left", "h":
+		m.cfg.RacksPerShip--
+		m.cfg.Validate()
+	case "esc", "enter":
+		m.state = StateSettings
+	}
+	return m, nil
+}
+
+// updateSettingsPods handles pods config
+func (m AppModel) updateSettingsPods(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k", "right", "l":
+		m.cfg.PodsPerRack++
+		m.cfg.Validate()
+	case "down", "j", "left", "h":
+		m.cfg.PodsPerRack--
+		m.cfg.Validate()
+	case "esc", "enter":
+		m.state = StateSettings
+	}
+	return m, nil
+}
+
+// updateSettingsBots handles bot config
+func (m AppModel) updateSettingsBots(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		m.cfg.MaxBots++
+		m.cfg.Validate()
+	case "down", "j":
+		m.cfg.MaxBots--
+		m.cfg.Validate()
+	case "right", "l":
+		// cycle difficulty
+		switch m.cfg.BotDifficulty {
+		case "easy":
+			m.cfg.BotDifficulty = "medium"
+		case "medium":
+			m.cfg.BotDifficulty = "hard"
+		case "hard":
+			m.cfg.BotDifficulty = "easy"
+		}
+	case "left", "h":
+		switch m.cfg.BotDifficulty {
+		case "easy":
+			m.cfg.BotDifficulty = "hard"
+		case "medium":
+			m.cfg.BotDifficulty = "easy"
+		case "hard":
+			m.cfg.BotDifficulty = "medium"
+		}
+	case "esc", "enter":
+		m.state = StateSettings
+	}
+	return m, nil
+}
+
+// updateSettingsK8s handles kubernetes config
+func (m AppModel) updateSettingsK8s(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k", "down", "j", " ":
+		m.cfg.EnableRealK8s = !m.cfg.EnableRealK8s
+	case "esc", "enter":
+		m.state = StateSettings
 	}
 	return m, nil
 }
@@ -754,6 +996,18 @@ func (m AppModel) View() string {
 	switch m.state {
 	case StateMenu:
 		return m.renderMenu()
+	case StateSettings:
+		return m.renderSettings()
+	case StateSettingsBoard:
+		return m.renderSettingsBoard()
+	case StateSettingsShips:
+		return m.renderSettingsShips()
+	case StateSettingsPods:
+		return m.renderSettingsPods()
+	case StateSettingsBots:
+		return m.renderSettingsBots()
+	case StateSettingsK8s:
+		return m.renderSettingsK8s()
 	case StateCompanySelect:
 		return m.renderCompanySelect()
 	case StateEnemyCountSelect:
@@ -796,6 +1050,121 @@ func (m AppModel) renderMenu() string {
 			menu,
 			hint,
 		),
+	)
+}
+
+// renderSettings draws the main settings menu
+func (m AppModel) renderSettings() string {
+	title := m.styles.Title.Render("SETTINGS")
+	subtitle := m.styles.Muted.Render("Configure your game")
+
+	var menu string
+	for i, item := range m.settingsItems {
+		if i == m.settingsCursor {
+			menu += m.styles.MenuItemSelected.Render("> "+item) + "\n"
+		} else {
+			menu += m.styles.MenuItem.Render("  "+item) + "\n"
+		}
+	}
+
+	hint := m.styles.Muted.Render("\n[up/down] navigate  [enter] select  [esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, subtitle, "", menu, hint),
+	)
+}
+
+// renderSettingsBoard draws board size config
+func (m AppModel) renderSettingsBoard() string {
+	title := m.styles.Title.Render("BOARD SETTINGS")
+
+	info := fmt.Sprintf("Width:  %d  [</>]\n", m.cfg.BoardWidth)
+	info += fmt.Sprintf("Height: %d  [^/v]\n", m.cfg.BoardHeight)
+
+	visual := fmt.Sprintf("\n%dx%d board = %d cells\n",
+		m.cfg.BoardWidth, m.cfg.BoardHeight,
+		m.cfg.BoardWidth*m.cfg.BoardHeight)
+
+	hint := m.styles.Muted.Render("\n[arrows] adjust  [enter/esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
+	)
+}
+
+// renderSettingsShips draws ships/racks config
+func (m AppModel) renderSettingsShips() string {
+	title := m.styles.Title.Render("SHIP SETTINGS")
+
+	info := fmt.Sprintf("Ships per player: %d  [^/v]\n", m.cfg.ShipsPerPlayer)
+	info += fmt.Sprintf("Racks per ship:   %d  [</>]\n", m.cfg.RacksPerShip)
+
+	visual := fmt.Sprintf("\nTotal racks: %d per player\n",
+		m.cfg.ShipsPerPlayer*m.cfg.RacksPerShip)
+
+	hint := m.styles.Muted.Render("\n[arrows] adjust  [enter/esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
+	)
+}
+
+// renderSettingsPods draws pods config
+func (m AppModel) renderSettingsPods() string {
+	title := m.styles.Title.Render("POD SETTINGS")
+
+	info := fmt.Sprintf("Pods per rack: %d\n", m.cfg.PodsPerRack)
+
+	totalRacks := m.cfg.ShipsPerPlayer * m.cfg.RacksPerShip
+	visual := fmt.Sprintf("\nTotal pods per player: %d\n",
+		totalRacks*m.cfg.PodsPerRack)
+
+	hint := m.styles.Muted.Render("\n[arrows] adjust  [enter/esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
+	)
+}
+
+// renderSettingsBots draws bot config
+func (m AppModel) renderSettingsBots() string {
+	title := m.styles.Title.Render("BOT SETTINGS")
+
+	info := fmt.Sprintf("Max bots:   %d       [^/v]\n", m.cfg.MaxBots)
+	info += fmt.Sprintf("Difficulty: %-6s  [</>]\n", m.cfg.BotDifficulty)
+
+	visual := "\nDifficulty affects AI targeting accuracy\n"
+	visual += "  easy:   random targeting\n"
+	visual += "  medium: some pattern detection\n"
+	visual += "  hard:   aggressive hunting\n"
+
+	hint := m.styles.Muted.Render("\n[arrows] adjust  [enter/esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
+	)
+}
+
+// renderSettingsK8s draws kubernetes config
+func (m AppModel) renderSettingsK8s() string {
+	title := m.styles.Title.Render("KUBERNETES SETTINGS")
+
+	enabled := "OFF"
+	if m.cfg.EnableRealK8s {
+		enabled = "ON"
+	}
+
+	info := fmt.Sprintf("Real K8s deployment: %s\n", enabled)
+	info += fmt.Sprintf("Namespace: %s\n", m.cfg.K8sNamespace)
+	info += fmt.Sprintf("Kubeconfig: %s\n", m.cfg.Kubeconfig)
+
+	visual := "\nWhen enabled, game deploys real pods to your cluster.\n"
+	visual += "Requires local k8s (minikube/kind).\n"
+
+	hint := m.styles.Muted.Render("\n[space] toggle  [enter/esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
 	)
 }
 
@@ -942,18 +1311,36 @@ func (m AppModel) renderPlacement() string {
 	)
 }
 
-// renderBattle draws the main battle screen
+// renderBattle draws the main battle screen (uses viewLevel)
 func (m AppModel) renderBattle() string {
 	if m.playerCompany == nil || m.enemyCompany == nil {
 		return "Loading..."
 	}
 
-	// header
+	// render based on view level
+	switch m.viewLevel {
+	case ViewShip:
+		return m.renderShipView()
+	case ViewRack:
+		return m.renderRackView()
+	case ViewYAML:
+		return m.renderYAMLView()
+	default:
+		return m.renderMapView()
+	}
+}
+
+// renderMapView is the default battle view (level 1)
+func (m AppModel) renderMapView() string {
+	// header with view level indicator
 	turnInfo := fmt.Sprintf("Turn: %d", m.turn)
-	turnInfo += " | YOUR TURN"
+	if m.isPlayerTurn {
+		turnInfo += " | YOUR TURN"
+	}
+	viewIndicator := fmt.Sprintf(" [VIEW 1/4]")
 	header := m.styles.Header.Render(
-		fmt.Sprintf("CLUSTERSHIP - %s vs %s   %s",
-			m.playerCompany.Name, m.enemyCompany.Name, turnInfo),
+		fmt.Sprintf("CLUSTERSHIP - %s vs %s   %s%s",
+			m.playerCompany.Name, m.enemyCompany.Name, turnInfo, viewIndicator),
 	)
 
 	// board
@@ -973,7 +1360,7 @@ func (m AppModel) renderBattle() string {
 
 	// footer with controls
 	footer := m.styles.Footer.Render(
-		"[arrows] move  [enter] fire  [p] pods  [c] cycle  [q] quit",
+		"[1-4] view level  [arrows] move  [enter] fire  [c] cycle  [q] quit",
 	)
 
 	return m.styles.App.Render(
@@ -984,6 +1371,304 @@ func (m AppModel) renderBattle() string {
 			footer,
 		),
 	)
+}
+
+// renderShipView shows ship/region detail (level 2)
+func (m AppModel) renderShipView() string {
+	header := m.styles.Header.Render(
+		fmt.Sprintf("SHIP VIEW - %s  [VIEW 2/4]", m.playerCompany.Name),
+	)
+
+	var content string
+	content += m.styles.Subtitle.Render("YOUR REGIONS (SHIPS):") + "\n\n"
+
+	for i, region := range m.playerCompany.Regions {
+		status := "ACTIVE"
+		style := m.styles.Success
+		if region.IsDestroyed {
+			status = "DESTROYED"
+			style = m.styles.Error
+		}
+
+		// count healthy racks
+		healthyRacks := 0
+		for _, rack := range region.Racks {
+			if !rack.IsDestroyed {
+				healthyRacks++
+			}
+		}
+
+		selected := ""
+		if region.ID == m.selectedShipID {
+			selected = "> "
+		} else {
+			selected = "  "
+		}
+
+		line := fmt.Sprintf("%s%s (%s) - %d/%d racks - %s",
+			selected, region.Name, region.ID,
+			healthyRacks, len(region.Racks),
+			style.Render(status))
+		content += line + "\n"
+
+		// show racks if selected
+		if region.ID == m.selectedShipID {
+			for _, rack := range region.Racks {
+				rackStatus := "OK"
+				rackStyle := m.styles.Success
+				if rack.IsDestroyed {
+					rackStatus = "HIT"
+					rackStyle = m.styles.Error
+				}
+				content += fmt.Sprintf("    [%s] %s at (%d,%d) - %d pods\n",
+					rackStyle.Render(rackStatus), rack.ID,
+					rack.Position[0], rack.Position[1], len(rack.Pods))
+			}
+		}
+
+		// navigation hint on first ship
+		if i == 0 {
+			content += "\n"
+		}
+	}
+
+	hint := m.styles.Muted.Render("\n[up/down] select ship  [1-4] change view  [q] quit")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
+	)
+}
+
+// renderRackView shows rack detail with pods (level 3)
+func (m AppModel) renderRackView() string {
+	header := m.styles.Header.Render(
+		fmt.Sprintf("RACK VIEW - %s  [VIEW 3/4]", m.playerCompany.Name),
+	)
+
+	var content string
+
+	// show selected rack if any
+	if m.selectedRack != nil {
+		rack := m.selectedRack
+		status := "ONLINE"
+		statusStyle := m.styles.Success
+		if rack.IsDestroyed {
+			status = "DESTROYED"
+			statusStyle = m.styles.Error
+		}
+
+		content += m.styles.Subtitle.Render(fmt.Sprintf("RACK: %s", rack.ID)) + "\n"
+		content += fmt.Sprintf("Position: (%d, %d)\n", rack.Position[0], rack.Position[1])
+		content += fmt.Sprintf("Status: %s\n", statusStyle.Render(status))
+		content += fmt.Sprintf("Capacity: %d pods\n\n", len(rack.Pods))
+
+		content += m.styles.Subtitle.Render("PODS:") + "\n"
+		for _, pod := range rack.Pods {
+			podStatus := "Running"
+			podStyle := m.styles.Success
+			switch pod.Status {
+			case game.PodPending:
+				podStatus = "Pending"
+				podStyle = m.styles.Warning
+			case game.PodTerminated:
+				podStatus = "Terminated"
+				podStyle = m.styles.Error
+			}
+			content += fmt.Sprintf("  [%s] %s (svc: %s)\n",
+				podStyle.Render(podStatus[:1]), pod.ID, pod.ServiceID)
+		}
+	} else {
+		content = m.styles.Muted.Render("No rack selected. Press 2 to select a ship first.")
+	}
+
+	// show all racks for navigation
+	content += "\n" + m.styles.Subtitle.Render("ALL RACKS:") + "\n"
+	for _, region := range m.playerCompany.Regions {
+		content += fmt.Sprintf("  %s:\n", region.Name)
+		for _, rack := range region.Racks {
+			selected := "  "
+			if rack.ID == m.selectedRackID {
+				selected = "> "
+			}
+			status := "OK"
+			if rack.IsDestroyed {
+				status = "HIT"
+			}
+			content += fmt.Sprintf("  %s[%s] %s\n", selected, status, rack.ID)
+		}
+	}
+
+	hint := m.styles.Muted.Render("\n[up/down] select rack  [1-4] change view  [q] quit")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
+	)
+}
+
+// renderYAMLView shows YAML manifest (level 4, fog of war applies)
+func (m AppModel) renderYAMLView() string {
+	header := m.styles.Header.Render("YAML VIEW  [VIEW 4/4]")
+
+	var content string
+
+	// YOUR SERVICES - always fully visible
+	content += m.styles.Subtitle.Render("YOUR SERVICES (full visibility):") + "\n"
+	content += m.renderServiceYAMLList(m.playerCompany, true) + "\n"
+
+	// ENEMY SERVICES - fog of war applies
+	for _, enemy := range m.enemyCompanies {
+		content += m.styles.Subtitle.Render(fmt.Sprintf("ENEMY: %s (fog of war):", enemy.Name)) + "\n"
+		content += m.renderServiceYAMLList(enemy, false) + "\n"
+	}
+
+	hint := m.styles.Muted.Render("\n[up/down] select service  [1-4] change view  [q] quit")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
+	)
+}
+
+// renderServiceYAMLList renders services for a company with fog of war
+func (m AppModel) renderServiceYAMLList(company *game.Company, isOwn bool) string {
+	var content string
+
+	for i, svc := range company.Services {
+		selected := "  "
+		if svc.ID == m.selectedSvcID {
+			selected = "> "
+		}
+
+		// determine visibility based on fog of war rules
+		canSeeName := isOwn || m.canSeeServiceName(company, svc)
+		canSeeYAML := isOwn || m.canSeeServiceYAML(company, svc)
+
+		// count pods by status
+		running, pending, terminated := 0, 0, 0
+		for _, p := range svc.Pods {
+			switch p.Status {
+			case game.PodRunning:
+				running++
+			case game.PodPending:
+				pending++
+			case game.PodTerminated:
+				terminated++
+			}
+		}
+
+		// service name line
+		var line string
+		if canSeeName {
+			line = fmt.Sprintf("%s%s - R:%d P:%d T:%d", selected, svc.Name, running, pending, terminated)
+		} else {
+			line = fmt.Sprintf("%s??? - unknown service", selected)
+		}
+		content += line + "\n"
+
+		// show yaml if selected
+		if svc.ID == m.selectedSvcID {
+			content += m.styles.Muted.Render("    ---") + "\n"
+
+			if canSeeYAML {
+				// full yaml visible
+				yaml := fmt.Sprintf(`    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: %s
+      labels:
+        service: %s
+        company: %s
+    spec:
+      replicas: %d
+      selector:
+        matchLabels:
+          service: %s
+      template:
+        spec:
+          containers:
+          - name: %s
+            # full yaml with real K8s enabled`,
+					svc.ID, svc.ID, company.ID, len(svc.Pods), svc.ID, svc.ID)
+				content += m.styles.Muted.Render(yaml) + "\n"
+			} else if canSeeName {
+				// partial - name visible but yaml hidden
+				yaml := fmt.Sprintf(`    apiVersion: ???
+    kind: ???
+    metadata:
+      name: %s
+      # YAML REDACTED
+      # destroy the ship to reveal full manifest`,
+					svc.ID)
+				content += m.styles.Warning.Render(yaml) + "\n"
+			} else {
+				// fully hidden
+				yaml := `    # SERVICE NOT YET DISCOVERED
+    # land a hit to reveal service name
+    # destroy ship to reveal full YAML`
+				content += m.styles.Error.Render(yaml) + "\n"
+			}
+		}
+
+		if i < len(company.Services)-1 {
+			content += "\n"
+		}
+	}
+
+	return content
+}
+
+// canSeeServiceName returns true if service name is visible (own or has hit)
+func (m AppModel) canSeeServiceName(company *game.Company, svc *game.Service) bool {
+	// can always see own services
+	if company.ID == m.playerCompany.ID {
+		return true
+	}
+
+	// can see enemy service if any pod has been hit (terminated)
+	for _, p := range svc.Pods {
+		if p.Status == game.PodTerminated {
+			return true
+		}
+	}
+
+	// can see if any rack with this service has been hit
+	for _, region := range company.Regions {
+		for _, rack := range region.Racks {
+			if rack.IsDestroyed {
+				// check if rack had pods from this service
+				for _, p := range rack.Pods {
+					if p.ServiceID == svc.ID {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// canSeeServiceYAML returns true if full YAML is visible (own or ship destroyed)
+func (m AppModel) canSeeServiceYAML(company *game.Company, svc *game.Service) bool {
+	// can always see own services
+	if company.ID == m.playerCompany.ID {
+		return true
+	}
+
+	// can see enemy YAML only if the ship containing service is destroyed
+	for _, region := range company.Regions {
+		if region.IsDestroyed {
+			// check if region had pods from this service
+			for _, rack := range region.Racks {
+				for _, p := range rack.Pods {
+					if p.ServiceID == svc.ID {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // renderSimpleBoard renders a simple view of the enemy board
@@ -1555,4 +2240,155 @@ func (m AppModel) renderPodView() string {
 			controls,
 		),
 	)
+}
+
+// view hierarchy selection helpers
+
+func (m *AppModel) selectNextShip() {
+	if m.playerCompany == nil || len(m.playerCompany.Regions) == 0 {
+		return
+	}
+
+	// find current index
+	idx := 0
+	for i, r := range m.playerCompany.Regions {
+		if r.ID == m.selectedShipID {
+			idx = i
+			break
+		}
+	}
+
+	// next
+	idx = (idx + 1) % len(m.playerCompany.Regions)
+	m.selectedShipID = m.playerCompany.Regions[idx].ID
+	m.selectedShip = m.playerCompany.Regions[idx]
+
+	// also update selected rack to first in this ship
+	if len(m.selectedShip.Racks) > 0 {
+		m.selectedRackID = m.selectedShip.Racks[0].ID
+		m.selectedRack = m.selectedShip.Racks[0]
+	}
+}
+
+func (m *AppModel) selectPrevShip() {
+	if m.playerCompany == nil || len(m.playerCompany.Regions) == 0 {
+		return
+	}
+
+	idx := 0
+	for i, r := range m.playerCompany.Regions {
+		if r.ID == m.selectedShipID {
+			idx = i
+			break
+		}
+	}
+
+	idx--
+	if idx < 0 {
+		idx = len(m.playerCompany.Regions) - 1
+	}
+	m.selectedShipID = m.playerCompany.Regions[idx].ID
+	m.selectedShip = m.playerCompany.Regions[idx]
+
+	if len(m.selectedShip.Racks) > 0 {
+		m.selectedRackID = m.selectedShip.Racks[0].ID
+		m.selectedRack = m.selectedShip.Racks[0]
+	}
+}
+
+func (m *AppModel) selectNextRack() {
+	if m.playerCompany == nil {
+		return
+	}
+
+	// build flat list of all racks
+	allRacks := make([]*game.Rack, 0)
+	for _, r := range m.playerCompany.Regions {
+		allRacks = append(allRacks, r.Racks...)
+	}
+
+	if len(allRacks) == 0 {
+		return
+	}
+
+	idx := 0
+	for i, rack := range allRacks {
+		if rack.ID == m.selectedRackID {
+			idx = i
+			break
+		}
+	}
+
+	idx = (idx + 1) % len(allRacks)
+	m.selectedRackID = allRacks[idx].ID
+	m.selectedRack = allRacks[idx]
+}
+
+func (m *AppModel) selectPrevRack() {
+	if m.playerCompany == nil {
+		return
+	}
+
+	allRacks := make([]*game.Rack, 0)
+	for _, r := range m.playerCompany.Regions {
+		allRacks = append(allRacks, r.Racks...)
+	}
+
+	if len(allRacks) == 0 {
+		return
+	}
+
+	idx := 0
+	for i, rack := range allRacks {
+		if rack.ID == m.selectedRackID {
+			idx = i
+			break
+		}
+	}
+
+	idx--
+	if idx < 0 {
+		idx = len(allRacks) - 1
+	}
+	m.selectedRackID = allRacks[idx].ID
+	m.selectedRack = allRacks[idx]
+}
+
+func (m *AppModel) selectNextService() {
+	if m.playerCompany == nil || len(m.playerCompany.Services) == 0 {
+		return
+	}
+
+	idx := 0
+	for i, svc := range m.playerCompany.Services {
+		if svc.ID == m.selectedSvcID {
+			idx = i
+			break
+		}
+	}
+
+	idx = (idx + 1) % len(m.playerCompany.Services)
+	m.selectedSvcID = m.playerCompany.Services[idx].ID
+	m.selectedService = m.playerCompany.Services[idx]
+}
+
+func (m *AppModel) selectPrevService() {
+	if m.playerCompany == nil || len(m.playerCompany.Services) == 0 {
+		return
+	}
+
+	idx := 0
+	for i, svc := range m.playerCompany.Services {
+		if svc.ID == m.selectedSvcID {
+			idx = i
+			break
+		}
+	}
+
+	idx--
+	if idx < 0 {
+		idx = len(m.playerCompany.Services) - 1
+	}
+	m.selectedSvcID = m.playerCompany.Services[idx].ID
+	m.selectedService = m.playerCompany.Services[idx]
 }

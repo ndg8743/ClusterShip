@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-s3-storage
+  labels:
+    app: clustership
+    company: aws
+    service: s3-storage
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: aws
+      service: s3-storage
+  template:
+    metadata:
+      labels:
+        company: aws
+        service: s3-storage
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio
+        args: ["server", "/data"]
+        ports:
+        - containerPort: 9000
+        env:
+        - name: MINIO_ROOT_USER
+          value: "clustership"
+        - name: MINIO_ROOT_PASSWORD
+          value: "clustership123"
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "128Mi"

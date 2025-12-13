@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netflix-cdn-edge
+  labels:
+    app: clustership
+    company: netflix
+    service: cdn-edge
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: netflix
+      service: cdn-edge
+  template:
+    metadata:
+      labels:
+        company: netflix
+        service: cdn-edge
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: "50m"
+            memory: "32Mi"
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10

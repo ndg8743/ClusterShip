@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netflix-encoding
+  labels:
+    app: clustership
+    company: netflix
+    service: encoding
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: netflix
+      service: encoding
+  template:
+    metadata:
+      labels:
+        company: netflix
+        service: encoding
+    spec:
+      containers:
+      - name: worker
+        image: busybox
+        command: ["sh", "-c", "while true; do echo 'encoding...'; sleep 30; done"]
+        resources:
+          limits:
+            cpu: "50m"
+            memory: "32Mi"

@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aws-rds-database
+  labels:
+    app: clustership
+    company: aws
+    service: rds-database
+spec:
+  serviceName: aws-rds
+  replicas: 1
+  selector:
+    matchLabels:
+      company: aws
+      service: rds-database
+  template:
+    metadata:
+      labels:
+        company: aws
+        service: rds-database
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "clustership"
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "256Mi"

@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-lambda-worker
+  labels:
+    app: clustership
+    company: aws
+    service: lambda-worker
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      company: aws
+      service: lambda-worker
+  template:
+    metadata:
+      labels:
+        company: aws
+        service: lambda-worker
+    spec:
+      containers:
+      - name: worker
+        image: busybox
+        command: ["sh", "-c", "while true; do echo 'lambda running'; sleep 10; done"]
+        resources:
+          limits:
+            cpu: "25m"
+            memory: "16Mi"
