@@ -52,7 +52,7 @@ type PlacedRack struct {
 	Position [2]int
 }
 
-// NewBoard creates a game board and places both fleets
+// NewBoard creates a game board and places both fleets on the shared ocean
 func NewBoard(width, height int, player, enemy *game.Company) *Board {
 	b := &Board{
 		Width:       width,
@@ -62,9 +62,12 @@ func NewBoard(width, height int, player, enemy *game.Company) *Board {
 		Events:      make([]game.GameEvent, 0),
 	}
 
-	// place fleets
-	b.PlayerFleet = b.placeFleet(player, "left")
-	b.EnemyFleet = b.placeFleet(enemy, "right")
+	// shared occupied map - all ships on same ocean, can't overlap
+	occupied := make(map[string]bool)
+
+	// place both fleets anywhere on the full board (shared ocean)
+	b.PlayerFleet = b.placeFleet(player, occupied)
+	b.EnemyFleet = b.placeFleet(enemy, occupied)
 
 	// create pods for services
 	b.initPods(b.PlayerFleet)
@@ -73,23 +76,13 @@ func NewBoard(width, height int, player, enemy *game.Company) *Board {
 	return b
 }
 
-// placeFleet places a company's regions on the board
-// side: "left" or "right" - which half of the board to use
-func (b *Board) placeFleet(company *game.Company, side string) *Fleet {
+// placeFleet places a company's regions anywhere on the shared ocean
+// occupied map is shared between all fleets to prevent overlaps
+func (b *Board) placeFleet(company *game.Company, occupied map[string]bool) *Fleet {
 	fleet := &Fleet{
 		Company: company,
 		Regions: make([]*PlacedRegion, len(company.Regions)),
 	}
-
-	// determine placement area
-	startX := 0
-	endX := b.Width / 2
-	if side == "right" {
-		startX = b.Width / 2
-		endX = b.Width
-	}
-
-	occupied := make(map[string]bool)
 
 	for i, region := range company.Regions {
 		placed := &PlacedRegion{
@@ -97,8 +90,8 @@ func (b *Board) placeFleet(company *game.Company, side string) *Fleet {
 			Racks:  make([]*PlacedRack, len(region.Racks)),
 		}
 
-		// try to place this region (ship)
-		cells := b.findPlacement(region.RackCount, startX, endX, 0, b.Height, occupied)
+		// place this region (ship) anywhere on the full board
+		cells := b.findPlacement(region.RackCount, 0, b.Width, 0, b.Height, occupied)
 
 		for j, cell := range cells {
 			key := fmt.Sprintf("%d,%d", cell[0], cell[1])

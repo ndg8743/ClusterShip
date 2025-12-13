@@ -3,10 +3,21 @@ package tui
 import (
 	"clustership/pkg/game"
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// tickMsg is sent to animate turns
+type tickMsg time.Time
+
+// doTick returns a command that sends a tick after a delay
+func doTick() tea.Cmd {
+	return tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
 
 // GameState represents the current phase of the game
 type GameState int
@@ -39,17 +50,26 @@ type AppModel struct {
 	// game state
 	board        *Board
 	ai           *AIPlayer // enemy AI
+	playerAI     *AIPlayer // player AI for demo mode
 	cursor       [2]int    // current cursor position on board
 	viewport     [2]int    // viewport offset for scrolling large boards
 	turn         int
 	isPlayerTurn bool
 	gameOver     bool
 	winner       string
-	lastMessage  string // last attack result message
+	lastMessage  string   // last attack result message
+	battleLog    []string // recent battle messages
+
+	// animation state
+	animating      bool      // whether turn is animating
+	pendingAttacks [][2]int  // attacks to animate
 
 	// display
 	showEmoji   bool
 	compactMode bool
+	viewW       int // viewport width in cells
+	viewH       int // viewport height in cells
+	demoMode    bool
 }
 
 // NewAppModel creates a fresh game instance
@@ -57,9 +77,12 @@ func NewAppModel() AppModel {
 	return AppModel{
 		state:     StateMenu,
 		styles:    DefaultStyles(),
-		menuItems: []string{"New Game", "Settings", "Quit"},
+		menuItems: []string{"New Game", "Demo", "Settings", "Quit"},
 		companies: game.ListCompanies(),
 		showEmoji: false, // ascii mode by default, easier on terminals
+		viewW:     30,    // viewport size
+		viewH:     20,
+		battleLog: make([]string, 0),
 	}
 }
 
@@ -74,7 +97,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// adjust viewport to fit terminal
+		m.viewW = min(40, msg.Width/3)
+		m.viewH = min(25, msg.Height-12)
 		return m, nil
+
+	case tickMsg:
+		return m.handleTick()
 
 	case tea.KeyMsg:
 		// global keys first
@@ -122,11 +151,16 @@ func (m AppModel) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", " ":
 		switch m.menuCursor {
 		case 0: // New Game
+			m.demoMode = false
 			m.state = StateCompanySelect
 			m.companyCursor = 0
-		case 1: // Settings
+		case 1: // Demo - auto plays both sides
+			m.demoMode = true
+			m.state = StateCompanySelect
+			m.companyCursor = 0
+		case 2: // Settings
 			m.showEmoji = !m.showEmoji // toggle emoji mode for now
-		case 2: // Quit
+		case 3: // Quit
 			return m, tea.Quit
 		}
 	}
@@ -169,19 +203,34 @@ func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", " ":
-		// create board with auto-placed fleets
-		m.board = NewBoard(20, 20, m.playerCompany, m.enemyCompany)
+		// create 100x100 board with auto-placed fleets on shared ocean
+		m.board = NewBoard(100, 100, m.playerCompany, m.enemyCompany)
 
-		// create AI with enemy's strategy
+		// create enemy AI
 		strategy := game.AIHunter // default
 		if m.enemyCompany != nil {
 			strategy = m.enemyCompany.AIStrategy
 		}
-		m.ai = NewAIPlayer(strategy, 20, 20)
+		m.ai = NewAIPlayer(strategy, 100, 100)
+
+		// in demo mode, create player AI too
+		if m.demoMode {
+			m.playerAI = NewAIPlayer(game.AIHunter, 100, 100)
+		}
+
+		// start cursor in center of board
+		m.cursor = [2]int{50, 50}
+		m.viewport = [2]int{35, 40}
+		m.battleLog = make([]string, 0)
 
 		m.state = StateBattle
 		m.isPlayerTurn = true
 		m.turn = 1
+
+		// in demo mode, start auto-play
+		if m.demoMode {
+			return m, doTick()
+		}
 	case "esc":
 		m.state = StateCompanySelect
 	}
@@ -190,6 +239,11 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateBattle handles the main battle phase
 func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// ignore input during animation
+	if m.animating {
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if m.cursor[1] > 0 {
@@ -207,17 +261,48 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.board != nil && m.cursor[0] < m.board.Width-1 {
 			m.cursor[0]++
 		}
+	// viewport panning with WASD
+	case "w":
+		if m.viewport[1] > 0 {
+			m.viewport[1] -= 5
+			if m.viewport[1] < 0 {
+				m.viewport[1] = 0
+			}
+		}
+	case "s":
+		if m.board != nil && m.viewport[1] < m.board.Height-m.viewH {
+			m.viewport[1] += 5
+		}
+	case "a":
+		if m.viewport[0] > 0 {
+			m.viewport[0] -= 5
+			if m.viewport[0] < 0 {
+				m.viewport[0] = 0
+			}
+		}
+	case "d":
+		if m.board != nil && m.viewport[0] < m.board.Width-m.viewW {
+			m.viewport[0] += 5
+		}
 	case "enter", " ":
 		if m.isPlayerTurn && m.board != nil {
 			result, _ := m.board.Attack(m.cursor[0], m.cursor[1], true)
 			if result != nil {
 				m.lastMessage = result.Message
+				// log the attack
+				player := m.playerCompany.Emoji + " You"
+				if result.Hit {
+					m.addBattleLog(fmt.Sprintf("%s hit at (%d,%d)!", player, m.cursor[0], m.cursor[1]))
+				} else {
+					m.addBattleLog(fmt.Sprintf("%s missed at (%d,%d)", player, m.cursor[0], m.cursor[1]))
+				}
 			}
 			m.checkWinCondition()
 			if !m.gameOver {
-				m.executeAITurn()
-				m.checkWinCondition()
-				m.turn++
+				// start enemy turn with animation
+				m.isPlayerTurn = false
+				m.startEnemyTurn()
+				return m, doTick()
 			}
 		}
 	case "tab":
@@ -234,6 +319,94 @@ func (m AppModel) updateGameOver(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = NewAppModel() // reset game
 	}
 	return m, nil
+}
+
+// handleTick processes animation ticks
+func (m AppModel) handleTick() (tea.Model, tea.Cmd) {
+	if m.state != StateBattle || m.gameOver {
+		return m, nil
+	}
+
+	// process enemy turn animation
+	if m.animating && len(m.pendingAttacks) > 0 {
+		attack := m.pendingAttacks[0]
+		m.pendingAttacks = m.pendingAttacks[1:]
+
+		result, _ := m.board.Attack(attack[0], attack[1], false)
+		m.ai.RecordResult(attack[0], attack[1], result)
+
+		// log the attack
+		enemy := m.enemyCompany.Emoji + " " + m.enemyCompany.Name
+		if result != nil && result.Hit {
+			m.addBattleLog(fmt.Sprintf("%s hit at (%d,%d)!", enemy, attack[0], attack[1]))
+		} else {
+			m.addBattleLog(fmt.Sprintf("%s missed at (%d,%d)", enemy, attack[0], attack[1]))
+		}
+
+		if len(m.pendingAttacks) > 0 {
+			return m, doTick()
+		}
+
+		// done with enemy turn
+		m.animating = false
+		m.isPlayerTurn = true
+		m.turn++
+		m.checkWinCondition()
+
+		// in demo mode, auto-play player turn
+		if m.demoMode && !m.gameOver {
+			return m, doTick()
+		}
+		return m, nil
+	}
+
+	// demo mode: auto-play player turn
+	if m.demoMode && m.isPlayerTurn && !m.animating && !m.gameOver && m.playerAI != nil {
+		target := m.playerAI.PickTarget()
+		m.cursor = target
+
+		result, _ := m.board.Attack(target[0], target[1], true)
+		m.playerAI.RecordResult(target[0], target[1], result)
+
+		player := m.playerCompany.Emoji + " " + m.playerCompany.Name
+		if result != nil && result.Hit {
+			m.addBattleLog(fmt.Sprintf("%s hit at (%d,%d)!", player, target[0], target[1]))
+			m.lastMessage = result.Message
+		} else {
+			m.addBattleLog(fmt.Sprintf("%s missed at (%d,%d)", player, target[0], target[1]))
+			m.lastMessage = "Miss"
+		}
+
+		m.checkWinCondition()
+		if !m.gameOver {
+			m.isPlayerTurn = false
+			m.startEnemyTurn()
+			return m, doTick()
+		}
+	}
+
+	return m, nil
+}
+
+// startEnemyTurn queues enemy attacks for animation
+func (m *AppModel) startEnemyTurn() {
+	if m.ai == nil {
+		return
+	}
+	m.animating = true
+	m.pendingAttacks = make([][2]int, 0)
+
+	// queue one attack
+	target := m.ai.PickTarget()
+	m.pendingAttacks = append(m.pendingAttacks, target)
+}
+
+// addBattleLog adds a message to the battle log (keeps last 5)
+func (m *AppModel) addBattleLog(msg string) {
+	m.battleLog = append(m.battleLog, msg)
+	if len(m.battleLog) > 5 {
+		m.battleLog = m.battleLog[1:]
+	}
 }
 
 // View renders the current state
@@ -392,16 +565,29 @@ func (m AppModel) renderSimpleBoard() string {
 		return "No board"
 	}
 
-	// show a 10x10 viewport for now
-	viewW, viewH := 10, 10
-	if m.compactMode {
-		viewW, viewH = 20, 20
+	viewW, viewH := m.viewW, m.viewH
+	if viewW <= 0 {
+		viewW = 30
+	}
+	if viewH <= 0 {
+		viewH = 20
 	}
 
+	// title showing viewport position
+	title := fmt.Sprintf("OCEAN MAP [%d-%d, %d-%d] of %dx%d",
+		m.viewport[0], m.viewport[0]+viewW,
+		m.viewport[1], m.viewport[1]+viewH,
+		m.board.Width, m.board.Height)
+
 	// header row with column numbers
-	header := "   "
+	header := "    "
 	for x := 0; x < viewW; x++ {
-		header += fmt.Sprintf("%d ", (m.viewport[0]+x)%10)
+		col := (m.viewport[0] + x) % 100
+		if col < 10 {
+			header += fmt.Sprintf("%d ", col)
+		} else {
+			header += fmt.Sprintf("%d", col%10)
+		}
 	}
 	header += "\n"
 
@@ -412,7 +598,7 @@ func (m AppModel) renderSimpleBoard() string {
 			break
 		}
 		// row number
-		grid += fmt.Sprintf("%2d ", boardY%100)
+		grid += fmt.Sprintf("%3d ", boardY)
 
 		for x := 0; x < viewW; x++ {
 			boardX := m.viewport[0] + x
@@ -420,7 +606,7 @@ func (m AppModel) renderSimpleBoard() string {
 				break
 			}
 
-			cell := m.getCellDisplay(boardX, boardY)
+			cell := m.getUnifiedCellDisplay(boardX, boardY)
 
 			// highlight cursor
 			if boardX == m.cursor[0] && boardY == m.cursor[1] {
@@ -432,47 +618,111 @@ func (m AppModel) renderSimpleBoard() string {
 		grid += "\n"
 	}
 
-	cursorInfo := fmt.Sprintf("Target: (%d, %d)", m.cursor[0], m.cursor[1])
+	// cursor info and turn status
+	cursorInfo := fmt.Sprintf("Cursor: (%d, %d)", m.cursor[0], m.cursor[1])
+	if m.animating {
+		cursorInfo += " | ENEMY ATTACKING..."
+	} else if m.isPlayerTurn {
+		cursorInfo += " | YOUR TURN"
+	}
+	if m.demoMode {
+		cursorInfo += " [DEMO]"
+	}
+
+	// legend
+	var legend string
+	if m.showEmoji {
+		legend = fmt.Sprintf("%s=Water  %s=Miss  %s=Hit  %s=Ship  %s=Destroyed",
+			EmojiWater, EmojiMiss, EmojiHit, EmojiShip, EmojiDestroyed)
+	} else {
+		legend = fmt.Sprintf("%s=Water  %s=Miss  %s=Hit  %s=Ship  %s=Destroyed",
+			m.styles.Water.Render(SymWater),
+			m.styles.Miss.Render(SymMiss),
+			m.styles.Hit.Render(SymHit),
+			m.styles.Ship.Render(SymShip),
+			m.styles.Destroyed.Render(SymDestroyed))
+	}
+
+	// controls
+	controls := "[arrows] move  [WASD] pan  [enter] fire  [tab] zoom"
 
 	return m.styles.BoardArea.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
-			m.styles.Subtitle.Render("ENEMY TERRITORY"),
+			m.styles.Subtitle.Render(title),
 			header+grid,
 			m.styles.Muted.Render(cursorInfo),
+			legend,
+			m.styles.Muted.Render(controls),
 		),
 	)
 }
 
-// getCellDisplay returns the display character for a board cell
-func (m AppModel) getCellDisplay(x, y int) string {
+// getUnifiedCellDisplay shows both player ships and all shots on the shared ocean
+func (m AppModel) getUnifiedCellDisplay(x, y int) string {
 	if m.board == nil {
 		return SymWater
 	}
 
-	state := m.board.GetEnemyCellState(x, y)
+	// check for player shots at enemy fleet
+	playerState := m.board.GetEnemyCellState(x, y)
+	// check for enemy shots at player fleet
+	enemyState := m.board.GetPlayerCellState(x, y)
 
-	switch state {
-	case CellHit:
+	// priority: show hits/misses first (both sides)
+	if playerState == CellHit || playerState == CellDestroyed {
+		if playerState == CellDestroyed {
+			if m.showEmoji {
+				return EmojiDestroyed
+			}
+			return m.styles.Destroyed.Render(SymDestroyed)
+		}
 		if m.showEmoji {
 			return EmojiHit
 		}
 		return m.styles.Hit.Render(SymHit)
-	case CellMiss:
+	}
+
+	if playerState == CellMiss {
 		if m.showEmoji {
 			return EmojiMiss
 		}
 		return m.styles.Miss.Render(SymMiss)
-	case CellDestroyed:
-		if m.showEmoji {
-			return EmojiDestroyed
-		}
-		return m.styles.Destroyed.Render(SymDestroyed)
-	default:
-		if m.showEmoji {
-			return EmojiWater
-		}
-		return m.styles.Water.Render(SymWater)
 	}
+
+	// show enemy shots at player ships
+	if enemyState == CellHit || enemyState == CellDestroyed {
+		if enemyState == CellDestroyed {
+			if m.showEmoji {
+				return EmojiDestroyed
+			}
+			return m.styles.Destroyed.Render(SymDestroyed)
+		}
+		if m.showEmoji {
+			return EmojiHit
+		}
+		return m.styles.Hit.Render(SymHit)
+	}
+
+	if enemyState == CellMiss {
+		if m.showEmoji {
+			return EmojiMiss
+		}
+		return m.styles.Miss.Render(SymMiss)
+	}
+
+	// show player's own ships (visible to player)
+	if enemyState == CellShip {
+		if m.showEmoji {
+			return EmojiShip
+		}
+		return m.styles.Ship.Render(SymShip)
+	}
+
+	// water/unexplored
+	if m.showEmoji {
+		return EmojiWater
+	}
+	return m.styles.Water.Render(SymWater)
 }
 
 // renderServiceStatus shows the status of enemy services and K8s events
@@ -632,17 +882,6 @@ func (m *AppModel) pickRandomEnemy(exclude string) string {
 		}
 	}
 	return m.companies[0] // fallback
-}
-
-func (m *AppModel) executeAITurn() {
-	if m.board == nil || m.ai == nil {
-		return
-	}
-
-	// let the AI pick a target
-	target := m.ai.PickTarget()
-	result, _ := m.board.Attack(target[0], target[1], false)
-	m.ai.RecordResult(target[0], target[1], result)
 }
 
 func (m *AppModel) checkWinCondition() {
