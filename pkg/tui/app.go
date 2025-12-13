@@ -70,6 +70,7 @@ type AppModel struct {
 	viewW       int // viewport width in cells
 	viewH       int // viewport height in cells
 	demoMode    bool
+	debugMode   bool // show all ships (no fog of war)
 }
 
 // NewAppModel creates a fresh game instance
@@ -307,6 +308,9 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "tab":
 		m.compactMode = !m.compactMode
+	case "v":
+		// toggle debug mode (show all ships, no fog of war)
+		m.debugMode = !m.debugMode
 	}
 	return m, nil
 }
@@ -579,17 +583,17 @@ func (m AppModel) renderSimpleBoard() string {
 		m.viewport[1], m.viewport[1]+viewH,
 		m.board.Width, m.board.Height)
 
-	// header row with column numbers
-	header := "    "
+	// header rows with column numbers (tens row + ones row)
+	tensRow := "    "
+	onesRow := "    "
 	for x := 0; x < viewW; x++ {
-		col := (m.viewport[0] + x) % 100
-		if col < 10 {
-			header += fmt.Sprintf("%d ", col)
-		} else {
-			header += fmt.Sprintf("%d", col%10)
-		}
+		col := m.viewport[0] + x
+		tens := (col / 10) % 10
+		ones := col % 10
+		tensRow += fmt.Sprintf("%d ", tens)
+		onesRow += fmt.Sprintf("%d ", ones)
 	}
-	header += "\n"
+	header := tensRow + "\n" + onesRow + "\n"
 
 	var grid string
 	for y := 0; y < viewH; y++ {
@@ -628,6 +632,9 @@ func (m AppModel) renderSimpleBoard() string {
 	if m.demoMode {
 		cursorInfo += " [DEMO]"
 	}
+	if m.debugMode {
+		cursorInfo += " [DEBUG: FOG OFF]"
+	}
 
 	// legend
 	var legend string
@@ -644,7 +651,7 @@ func (m AppModel) renderSimpleBoard() string {
 	}
 
 	// controls
-	controls := "[arrows] move  [WASD] pan  [enter] fire  [tab] zoom"
+	controls := "[arrows] move  [WASD] pan  [enter] fire  [v] debug  [tab] zoom"
 
 	return m.styles.BoardArea.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
@@ -712,6 +719,14 @@ func (m AppModel) getUnifiedCellDisplay(x, y int) string {
 
 	// show player's own ships (visible to player)
 	if enemyState == CellShip {
+		if m.showEmoji {
+			return EmojiShip
+		}
+		return m.styles.Ship.Render(SymShip)
+	}
+
+	// debug mode: show enemy ships (fog of war disabled)
+	if m.debugMode && m.board.HasEnemyShipAt(x, y) {
 		if m.showEmoji {
 			return EmojiShip
 		}

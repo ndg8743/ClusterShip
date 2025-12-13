@@ -457,6 +457,11 @@ func (b *Board) FleetHealthy(fleet *Fleet) bool {
 	return fleet.Company.HealthyPodCount() > 0
 }
 
+// HasEnemyShipAt returns true if there's an enemy ship at the given position
+func (b *Board) HasEnemyShipAt(x, y int) bool {
+	return b.findRackAt(b.EnemyFleet, x, y) != nil
+}
+
 // GetFleetStats returns stats about a fleet
 type FleetStats struct {
 	TotalPods   int
