@@ -1,7 +1,6 @@
 package game
 
-// Company represents a tech company with its infrastructure.
-// Think of this as the "fleet" in battleship terms - the whole thing we're attacking.
+// Company represents a tech company's infrastructure (the fleet).
 type Company struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
@@ -13,8 +12,7 @@ type Company struct {
 	Difficulty  string    `json:"difficulty"`
 }
 
-// Region is a data center - basically a "ship" in battleship terms.
-// Each region has multiple racks (cells) that can be hit.
+// Region is a data center containing multiple racks.
 type Region struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
@@ -26,8 +24,7 @@ type Region struct {
 	IsDestroyed bool   `json:"-"`
 }
 
-// Rack is a server rack (single cell on the board, like a K8s Node).
-// When you "hit" a cell, you're hitting a rack.
+// Rack is a server rack (single board cell).
 type Rack struct {
 	ID          string
 	RegionID    string
@@ -38,8 +35,7 @@ type Rack struct {
 	HitCount    int
 }
 
-// Pod is a workload unit - the actual thing that gets destroyed.
-// In K8s terms: the thing running on the node that serves traffic.
+// Pod is a workload unit running on a rack.
 type Pod struct {
 	ID        string
 	ServiceID string
@@ -52,7 +48,6 @@ type Pod struct {
 }
 
 // Service routes traffic to healthy pods.
-// This is the K8s Service abstraction - it's what players are really trying to kill.
 type Service struct {
 	ID          string       `json:"id"`
 	Name        string       `json:"name"`

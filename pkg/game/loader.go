@@ -104,7 +104,6 @@ func CompanyFromTemplate(t *CompanyTemplate) *Company {
 }
 
 // TotalRacks returns the total number of racks across all regions.
-// This is effectively the "ship size" in battleship terms.
 func (c *Company) TotalRacks() int {
 	total := 0
 	for _, r := range c.Regions {

@@ -163,7 +163,7 @@ func DefaultStyles() *Styles {
 	}
 }
 
-// board symbols - using unicode for that sweet terminal look
+// board symbols
 const (
 	SymWater     = "~"
 	SymMiss      = "o"
@@ -174,17 +174,9 @@ const (
 	SymEmpty     = " "
 )
 
-// emoji symbols for k8s vibes
+// status symbols
 const (
-	EmojiWater     = "🌊"
-	EmojiMiss      = "💨"
-	EmojiHit       = "💥"
-	EmojiShip      = "🏢"
-	EmojiDestroyed = "🔥"
-	EmojiPodOK     = "✅"
-	EmojiPodWarn   = "⚠️"
-	EmojiPodDead   = "☠️"
-	EmojiLatencyOK = "🟢"
-	EmojiLatencyMid = "🟡"
-	EmojiLatencyBad = "🔴"
+	SymPodOK   = "+"
+	SymPodWarn = "!"
+	SymPodDead = "x"
 )

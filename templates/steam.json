@@ -1,40 +1,40 @@
 {
-  "id": "aws",
-  "name": "Amazon Web Services",
+  "id": "steam",
+  "name": "Steam",
   "emoji": "",
-  "description": "The cloud giant with massive global infrastructure",
+  "description": "Gaming platform with global content delivery",
   "regions": [
     {
-      "id": "us-east-1",
-      "name": "N. Virginia",
+      "id": "us-west",
+      "name": "Seattle",
       "emoji": "",
       "racks": 5,
       "latency_ms": 15
     },
     {
-      "id": "us-west-2",
-      "name": "Oregon",
+      "id": "us-east",
+      "name": "Chicago",
       "emoji": "",
       "racks": 4,
-      "latency_ms": 50
+      "latency_ms": 25
     },
     {
-      "id": "eu-west-1",
-      "name": "Ireland",
+      "id": "eu-west",
+      "name": "Amsterdam",
       "emoji": "",
-      "racks": 3,
+      "racks": 4,
       "latency_ms": 80
     },
     {
-      "id": "ap-northeast-1",
-      "name": "Tokyo",
+      "id": "asia-east",
+      "name": "Singapore",
       "emoji": "",
       "racks": 3,
-      "latency_ms": 140
+      "latency_ms": 160
     },
     {
-      "id": "sa-east-1",
-      "name": "Sao Paulo",
+      "id": "oceania",
+      "name": "Sydney",
       "emoji": "",
       "racks": 2,
       "latency_ms": 180
@@ -42,38 +42,38 @@
   ],
   "services": [
     {
-      "id": "ec2-api",
-      "name": "EC2 Control Plane",
+      "id": "store",
+      "name": "Store Frontend",
       "emoji": "",
-      "replicas": 3,
+      "replicas": 4,
       "pods_per_replica": 1,
       "affinity": "spread",
       "criticality": "critical",
       "can_failover": true
     },
     {
-      "id": "s3-api",
-      "name": "S3 Storage",
+      "id": "cdn",
+      "name": "Game Downloads CDN",
       "emoji": "",
       "replicas": 5,
       "pods_per_replica": 1,
       "affinity": "spread",
-      "criticality": "critical",
-      "can_failover": true
-    },
-    {
-      "id": "lambda",
-      "name": "Lambda Runtime",
-      "emoji": "",
-      "replicas": 4,
-      "pods_per_replica": 1,
-      "affinity": "none",
       "criticality": "high",
       "can_failover": true
     },
     {
-      "id": "rds",
-      "name": "RDS Database",
+      "id": "matchmaking",
+      "name": "Matchmaking Service",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "auth",
+      "name": "Steam Guard Auth",
       "emoji": "",
       "replicas": 2,
       "pods_per_replica": 1,
@@ -82,16 +82,16 @@
       "can_failover": false
     },
     {
-      "id": "cloudfront",
-      "name": "CloudFront CDN",
+      "id": "workshop",
+      "name": "Workshop Mods",
       "emoji": "",
-      "replicas": 4,
+      "replicas": 2,
       "pods_per_replica": 1,
-      "affinity": "spread",
-      "criticality": "latency-critical",
+      "affinity": "none",
+      "criticality": "low",
       "can_failover": true
     }
   ],
   "ai_strategy": "hunter",
-  "difficulty": "hard"
+  "difficulty": "medium"
 }

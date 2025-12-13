@@ -17,18 +17,21 @@ type ShotResult struct {
 	Message    string
 }
 
-// Board represents the game board with both fleets placed
+// Board represents the game board with all fleets placed
 type Board struct {
 	Width  int
 	Height int
 
-	// fleets placed on the board
+	// Multi-fleet support
+	Fleets    map[string]*Fleet                  // companyID -> Fleet
+	Shots     map[string]map[string]*ShotResult  // attackerID -> coordKey -> result
+	CellOwner map[string]string                  // coordKey -> companyID (who owns this cell)
+
+	// Legacy single-enemy fields (for backward compatibility)
 	PlayerFleet *Fleet
 	EnemyFleet  *Fleet
-
-	// shot tracking
-	PlayerShots map[string]*ShotResult // player's shots at enemy
-	EnemyShots  map[string]*ShotResult // enemy's shots at player
+	PlayerShots map[string]*ShotResult
+	EnemyShots  map[string]*ShotResult
 
 	// events log
 	Events []game.GameEvent
@@ -52,26 +55,62 @@ type PlacedRack struct {
 	Position [2]int
 }
 
-// NewBoard creates a game board and places both fleets on the shared ocean
+// NewBoard creates a game board and places both fleets on the shared ocean (legacy 1v1 mode)
 func NewBoard(width, height int, player, enemy *game.Company) *Board {
+	// Ensure IDs are set
+	if player.ID == "" {
+		player.ID = "player"
+	}
+	if enemy.ID == "" {
+		enemy.ID = "enemy"
+	}
+	return NewMultiBoard(width, height, []*game.Company{player, enemy})
+}
+
+// NewMultiBoard creates a game board with multiple companies
+func NewMultiBoard(width, height int, companies []*game.Company) *Board {
 	b := &Board{
 		Width:       width,
 		Height:      height,
+		Fleets:      make(map[string]*Fleet),
+		Shots:       make(map[string]map[string]*ShotResult),
+		CellOwner:   make(map[string]string),
 		PlayerShots: make(map[string]*ShotResult),
 		EnemyShots:  make(map[string]*ShotResult),
 		Events:      make([]game.GameEvent, 0),
 	}
 
+	// Initialize shots map for each company
+	for _, company := range companies {
+		b.Shots[company.ID] = make(map[string]*ShotResult)
+	}
+
 	// shared occupied map - all ships on same ocean, can't overlap
 	occupied := make(map[string]bool)
 
-	// place both fleets anywhere on the full board (shared ocean)
-	b.PlayerFleet = b.placeFleet(player, occupied)
-	b.EnemyFleet = b.placeFleet(enemy, occupied)
+	// place all fleets
+	for i, company := range companies {
+		fleet := b.placeFleet(company, occupied)
+		b.Fleets[company.ID] = fleet
 
-	// create pods for services
-	b.initPods(b.PlayerFleet)
-	b.initPods(b.EnemyFleet)
+		// Track cell ownership for rendering
+		for _, region := range fleet.Regions {
+			for _, rack := range region.Racks {
+				key := fmt.Sprintf("%d,%d", rack.Position[0], rack.Position[1])
+				b.CellOwner[key] = company.ID
+			}
+		}
+
+		// Initialize pods
+		b.initPods(fleet)
+
+		// Set legacy fields for backward compatibility
+		if i == 0 {
+			b.PlayerFleet = fleet
+		} else if i == 1 {
+			b.EnemyFleet = fleet
+		}
+	}
 
 	return b
 }
@@ -244,35 +283,84 @@ func (b *Board) findRackForPod(fleet *Fleet, svc *game.Service) *game.Rack {
 	}
 }
 
-// Attack executes an attack at the given coordinates
+// Attack executes an attack at the given coordinates (legacy 1v1 mode)
 // Returns hit result and any events generated
 func (b *Board) Attack(x, y int, byPlayer bool) (*ShotResult, []game.GameEvent) {
-	key := fmt.Sprintf("%d,%d", x, y)
-	var shots map[string]*ShotResult
-	var targetFleet *Fleet
-
 	if byPlayer {
-		shots = b.PlayerShots
-		targetFleet = b.EnemyFleet
-	} else {
-		shots = b.EnemyShots
-		targetFleet = b.PlayerFleet
+		return b.AttackMulti(x, y, "player", "")
+	}
+	// Find first non-player company for enemy attack
+	for id := range b.Fleets {
+		if id != "player" {
+			return b.AttackMulti(x, y, id, "player")
+		}
+	}
+	return b.AttackMulti(x, y, "enemy", "player")
+}
+
+// AttackMulti executes an attack from one company, hitting any valid target
+// attackerID: the company making the attack
+// targetID: specific target (empty string = attack any valid target at this cell)
+func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult, []game.GameEvent) {
+	key := fmt.Sprintf("%d,%d", x, y)
+
+	// Get or create attacker's shot map
+	if b.Shots[attackerID] == nil {
+		b.Shots[attackerID] = make(map[string]*ShotResult)
 	}
 
-	// already shot here?
-	if _, exists := shots[key]; exists {
+	// Already shot here by this attacker?
+	if _, exists := b.Shots[attackerID][key]; exists {
 		return nil, nil
 	}
 
 	result := &ShotResult{
 		Coord: [2]int{x, y},
 	}
-
 	events := make([]game.GameEvent, 0)
 
-	// check if we hit a rack
+	// Find what's at this cell (if anything)
+	ownerID := b.CellOwner[key]
+
+	// Can't attack yourself or empty cell
+	if ownerID == "" || ownerID == attackerID {
+		result.Hit = false
+		result.Message = "Miss"
+		b.Shots[attackerID][key] = result
+		// Also update legacy maps for backward compat
+		if attackerID == "player" {
+			b.PlayerShots[key] = result
+		} else {
+			b.EnemyShots[key] = result
+		}
+		return result, events
+	}
+
+	// If targetID specified, must match owner
+	if targetID != "" && ownerID != targetID {
+		result.Hit = false
+		result.Message = "Miss"
+		b.Shots[attackerID][key] = result
+		if attackerID == "player" {
+			b.PlayerShots[key] = result
+		} else {
+			b.EnemyShots[key] = result
+		}
+		return result, events
+	}
+
+	// Find the fleet being hit
+	targetFleet := b.Fleets[ownerID]
+	if targetFleet == nil {
+		result.Hit = false
+		result.Message = "Miss"
+		b.Shots[attackerID][key] = result
+		return result, events
+	}
+
+	// Check if we hit a rack
 	rack := b.findRackAt(targetFleet, x, y)
-	if rack != nil {
+	if rack != nil && !rack.IsDestroyed {
 		result.Hit = true
 		result.HitRack = rack
 		rack.HitCount++
@@ -330,13 +418,19 @@ func (b *Board) Attack(x, y int, byPlayer bool) (*ShotResult, []game.GameEvent) 
 			})
 		}
 
-		result.Message = fmt.Sprintf("Hit! Rack %s", rack.ID)
+		result.Message = fmt.Sprintf("Hit! %s's Rack %s", targetFleet.Company.Name, rack.ID)
 	} else {
 		result.Hit = false
 		result.Message = "Miss"
 	}
 
-	shots[key] = result
+	b.Shots[attackerID][key] = result
+	// Also update legacy maps for backward compat
+	if attackerID == "player" {
+		b.PlayerShots[key] = result
+	} else {
+		b.EnemyShots[key] = result
+	}
 	b.Events = append(b.Events, events...)
 
 	return result, events
@@ -360,7 +454,6 @@ func (b *Board) findRackAt(fleet *Fleet, x, y int) *game.Rack {
 
 // tryReschedulePod attempts to move a pod to another rack based on affinity
 func (b *Board) tryReschedulePod(fleet *Fleet, pod *game.Pod) bool {
-	// find the service
 	var svc *game.Service
 	for _, s := range fleet.Company.Services {
 		if s.ID == pod.ServiceID {
@@ -374,17 +467,34 @@ func (b *Board) tryReschedulePod(fleet *Fleet, pod *game.Pod) bool {
 	}
 
 	if svc.Affinity == game.AffinityHard {
-		// hard affinity can't reschedule to different rack
 		return false
 	}
+
+	oldRackID := pod.RackID
 
 	// find a new rack
 	newRack := b.findRackForPod(fleet, svc)
-	if newRack == nil || newRack.ID == pod.RackID {
+	if newRack == nil || newRack.ID == oldRackID {
 		return false
 	}
 
-	// move the pod
+	// remove pod from old rack
+	for _, region := range fleet.Company.Regions {
+		for _, rack := range region.Racks {
+			if rack.ID == oldRackID {
+				newPods := make([]*game.Pod, 0, len(rack.Pods))
+				for _, p := range rack.Pods {
+					if p.ID != pod.ID {
+						newPods = append(newPods, p)
+					}
+				}
+				rack.Pods = newPods
+				break
+			}
+		}
+	}
+
+	// move pod to new rack
 	pod.RackID = newRack.ID
 	pod.RegionID = newRack.RegionID
 	pod.Position = newRack.Position
@@ -460,6 +570,38 @@ func (b *Board) FleetHealthy(fleet *Fleet) bool {
 // HasEnemyShipAt returns true if there's an enemy ship at the given position
 func (b *Board) HasEnemyShipAt(x, y int) bool {
 	return b.findRackAt(b.EnemyFleet, x, y) != nil
+}
+
+// FleetHealthyByID returns if a specific fleet has running pods
+func (b *Board) FleetHealthyByID(companyID string) bool {
+	fleet, ok := b.Fleets[companyID]
+	if !ok || fleet == nil || fleet.Company == nil {
+		return false
+	}
+	return fleet.Company.HealthyPodCount() > 0
+}
+
+// GetActiveCompanies returns IDs of companies with healthy fleets
+func (b *Board) GetActiveCompanies() []string {
+	active := make([]string, 0)
+	for id := range b.Fleets {
+		if b.FleetHealthyByID(id) {
+			active = append(active, id)
+		}
+	}
+	return active
+}
+
+// GetCellOwner returns the company ID that owns the cell at (x, y)
+func (b *Board) GetCellOwner(x, y int) string {
+	key := fmt.Sprintf("%d,%d", x, y)
+	return b.CellOwner[key]
+}
+
+// HasShipAt returns true if any company has a ship at (x, y)
+func (b *Board) HasShipAt(x, y int) bool {
+	key := fmt.Sprintf("%d,%d", x, y)
+	return b.CellOwner[key] != ""
 }
 
 // GetFleetStats returns stats about a fleet

@@ -1,0 +1,97 @@
+{
+  "id": "openai",
+  "name": "OpenAI",
+  "emoji": "",
+  "description": "AI research lab with GPU-heavy infrastructure",
+  "regions": [
+    {
+      "id": "us-west-2",
+      "name": "Oregon",
+      "emoji": "",
+      "racks": 5,
+      "latency_ms": 25
+    },
+    {
+      "id": "us-east-1",
+      "name": "Virginia",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 30
+    },
+    {
+      "id": "us-central",
+      "name": "Texas",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 35
+    },
+    {
+      "id": "eu-west-1",
+      "name": "Ireland",
+      "emoji": "",
+      "racks": 3,
+      "latency_ms": 100
+    },
+    {
+      "id": "asia-east",
+      "name": "Tokyo",
+      "emoji": "",
+      "racks": 2,
+      "latency_ms": 150
+    }
+  ],
+  "services": [
+    {
+      "id": "gpt-api",
+      "name": "GPT API Gateway",
+      "emoji": "",
+      "replicas": 5,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "critical",
+      "can_failover": true
+    },
+    {
+      "id": "inference",
+      "name": "Model Inference",
+      "emoji": "",
+      "replicas": 6,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "critical",
+      "can_failover": true
+    },
+    {
+      "id": "training",
+      "name": "Training Cluster",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "high",
+      "can_failover": false
+    },
+    {
+      "id": "embedding",
+      "name": "Embedding Service",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "medium",
+      "can_failover": true
+    },
+    {
+      "id": "safety",
+      "name": "Safety Systems",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    }
+  ],
+  "ai_strategy": "aggressive",
+  "difficulty": "hard"
+}

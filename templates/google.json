@@ -1,36 +1,50 @@
 {
   "id": "google",
   "name": "Google Cloud",
-  "emoji": "🔍",
+  "emoji": "",
   "description": "Search giant with AI-powered infrastructure",
   "regions": [
     {
       "id": "us-central1",
       "name": "Iowa",
-      "emoji": "🌽",
+      "emoji": "",
       "racks": 5,
       "latency_ms": 25
     },
     {
+      "id": "us-east4",
+      "name": "Virginia",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 30
+    },
+    {
       "id": "europe-west1",
       "name": "Belgium",
-      "emoji": "🇧🇪",
+      "emoji": "",
       "racks": 3,
       "latency_ms": 90
     },
     {
       "id": "asia-east1",
       "name": "Taiwan",
-      "emoji": "🇹🇼",
+      "emoji": "",
       "racks": 3,
       "latency_ms": 140
+    },
+    {
+      "id": "australia-southeast1",
+      "name": "Sydney",
+      "emoji": "",
+      "racks": 2,
+      "latency_ms": 170
     }
   ],
   "services": [
     {
       "id": "search",
       "name": "Search Index",
-      "emoji": "🔍",
+      "emoji": "",
       "replicas": 4,
       "pods_per_replica": 1,
       "affinity": "spread",
@@ -40,7 +54,7 @@
     {
       "id": "bigquery",
       "name": "BigQuery",
-      "emoji": "📊",
+      "emoji": "",
       "replicas": 3,
       "pods_per_replica": 1,
       "affinity": "soft",
@@ -50,7 +64,7 @@
     {
       "id": "gke",
       "name": "GKE Control Plane",
-      "emoji": "☸️",
+      "emoji": "",
       "replicas": 2,
       "pods_per_replica": 1,
       "affinity": "hard",
@@ -60,7 +74,7 @@
     {
       "id": "spanner",
       "name": "Cloud Spanner",
-      "emoji": "🗄️",
+      "emoji": "",
       "replicas": 2,
       "pods_per_replica": 1,
       "affinity": "hard",
@@ -70,7 +84,7 @@
     {
       "id": "vertex-ai",
       "name": "Vertex AI",
-      "emoji": "🤖",
+      "emoji": "",
       "replicas": 3,
       "pods_per_replica": 1,
       "affinity": "none",
