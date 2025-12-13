@@ -37,41 +37,18 @@ type AppModel struct {
 	enemyCompany   *game.Company
 
 	// game state
-	board       *GameBoard
-	cursor      [2]int   // current cursor position on board
-	viewport    [2]int   // viewport offset for scrolling large boards
-	turn        int
+	board        *Board
+	cursor       [2]int // current cursor position on board
+	viewport     [2]int // viewport offset for scrolling large boards
+	turn         int
 	isPlayerTurn bool
-	events      []game.GameEvent
-	gameOver    bool
-	winner      string
+	gameOver     bool
+	winner       string
+	lastMessage  string // last attack result message
 
 	// display
 	showEmoji   bool
 	compactMode bool
-}
-
-// GameBoard holds the unified game board state (both fleets on same 100x100)
-type GameBoard struct {
-	Width       int
-	Height      int
-	PlayerFleet *game.Company
-	EnemyFleet  *game.Company
-
-	// shot tracking: "x,y" -> result
-	PlayerShots map[string]ShotResult
-	EnemyShots  map[string]ShotResult
-}
-
-// ShotResult tracks what happened when a cell was attacked
-type ShotResult struct {
-	Hit        bool
-	Coord      [2]int
-	HitRack    *game.Rack
-	HitPod     *game.Pod
-	KilledPod  bool
-	KilledRack bool
-	Message    string
 }
 
 // NewAppModel creates a fresh game instance
@@ -180,8 +157,6 @@ func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		enemyTemplate, _ := game.LoadCompanyTemplate(enemyID)
 		m.enemyCompany = game.CompanyFromTemplate(enemyTemplate)
 
-		// init the game board
-		m.initGameBoard()
 		m.state = StatePlacement
 	case "esc":
 		m.state = StateMenu
@@ -193,8 +168,8 @@ func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", " ":
-		// auto-place and start battle
-		m.autoPlaceFleets()
+		// create board with auto-placed fleets
+		m.board = NewBoard(20, 20, m.playerCompany, m.enemyCompany)
 		m.state = StateBattle
 		m.isPlayerTurn = true
 		m.turn = 1
@@ -212,7 +187,7 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor[1]--
 		}
 	case "down", "j":
-		if m.cursor[1] < m.board.Height-1 {
+		if m.board != nil && m.cursor[1] < m.board.Height-1 {
 			m.cursor[1]++
 		}
 	case "left", "h":
@@ -220,18 +195,19 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor[0]--
 		}
 	case "right", "l":
-		if m.cursor[0] < m.board.Width-1 {
+		if m.board != nil && m.cursor[0] < m.board.Width-1 {
 			m.cursor[0]++
 		}
 	case "enter", " ":
-		if m.isPlayerTurn {
-			m.executePlayerAttack()
+		if m.isPlayerTurn && m.board != nil {
+			result, _ := m.board.Attack(m.cursor[0], m.cursor[1], true)
+			if result != nil {
+				m.lastMessage = result.Message
+			}
 			m.checkWinCondition()
 			if !m.gameOver {
-				m.isPlayerTurn = false
 				m.executeAITurn()
 				m.checkWinCondition()
-				m.isPlayerTurn = true
 				m.turn++
 			}
 		}
@@ -359,26 +335,32 @@ func (m AppModel) renderPlacement() string {
 
 // renderBattle draws the main battle screen
 func (m AppModel) renderBattle() string {
+	if m.playerCompany == nil || m.enemyCompany == nil {
+		return "Loading..."
+	}
+
 	// header
 	turnInfo := fmt.Sprintf("Turn: %d", m.turn)
-	if m.isPlayerTurn {
-		turnInfo += " | YOUR TURN"
-	} else {
-		turnInfo += " | Enemy turn..."
-	}
+	turnInfo += " | YOUR TURN"
 	header := m.styles.Header.Render(
 		fmt.Sprintf("CLUSTERSHIP - %s vs %s   %s",
 			m.playerCompany.Emoji, m.enemyCompany.Emoji, turnInfo),
 	)
 
-	// board (simplified for now)
+	// board
 	board := m.renderSimpleBoard()
 
-	// sidebar with service status
+	// sidebar with service status and events
 	sidebar := m.renderServiceStatus()
 
 	// combine board and sidebar
 	main := lipgloss.JoinHorizontal(lipgloss.Top, board, "  ", sidebar)
+
+	// status line with last message
+	var statusLine string
+	if m.lastMessage != "" {
+		statusLine = m.styles.Warning.Render(m.lastMessage) + "\n"
+	}
 
 	// footer with controls
 	footer := m.styles.Footer.Render(
@@ -389,6 +371,7 @@ func (m AppModel) renderBattle() string {
 		lipgloss.JoinVertical(lipgloss.Left,
 			header,
 			main,
+			statusLine,
 			footer,
 		),
 	)
@@ -453,27 +436,34 @@ func (m AppModel) renderSimpleBoard() string {
 
 // getCellDisplay returns the display character for a board cell
 func (m AppModel) getCellDisplay(x, y int) string {
-	key := fmt.Sprintf("%d,%d", x, y)
+	if m.board == nil {
+		return SymWater
+	}
 
-	// check if we've shot here
-	if result, ok := m.board.PlayerShots[key]; ok {
-		if result.Hit {
-			if m.showEmoji {
-				return EmojiHit
-			}
-			return m.styles.Hit.Render(SymHit)
+	state := m.board.GetEnemyCellState(x, y)
+
+	switch state {
+	case CellHit:
+		if m.showEmoji {
+			return EmojiHit
 		}
+		return m.styles.Hit.Render(SymHit)
+	case CellMiss:
 		if m.showEmoji {
 			return EmojiMiss
 		}
 		return m.styles.Miss.Render(SymMiss)
+	case CellDestroyed:
+		if m.showEmoji {
+			return EmojiDestroyed
+		}
+		return m.styles.Destroyed.Render(SymDestroyed)
+	default:
+		if m.showEmoji {
+			return EmojiWater
+		}
+		return m.styles.Water.Render(SymWater)
 	}
-
-	// unexplored
-	if m.showEmoji {
-		return EmojiWater
-	}
-	return m.styles.Water.Render(SymWater)
 }
 
 // renderServiceStatus shows the status of enemy services
@@ -570,69 +560,43 @@ func (m *AppModel) pickRandomEnemy(exclude string) string {
 	return m.companies[0] // fallback
 }
 
-func (m *AppModel) initGameBoard() {
-	m.board = &GameBoard{
-		Width:       20, // start with 20x20 for testing
-		Height:      20,
-		PlayerFleet: m.playerCompany,
-		EnemyFleet:  m.enemyCompany,
-		PlayerShots: make(map[string]ShotResult),
-		EnemyShots:  make(map[string]ShotResult),
-	}
-}
-
-func (m *AppModel) autoPlaceFleets() {
-	// TODO: implement proper placement with affinity rules
-	// for now, just create pods for services
-	if m.enemyCompany != nil {
-		podID := 0
-		for _, svc := range m.enemyCompany.Services {
-			for i := 0; i < svc.Replicas; i++ {
-				pod := &game.Pod{
-					ID:        fmt.Sprintf("%s-pod-%d", svc.ID, podID),
-					ServiceID: svc.ID,
-					Health:    1,
-					MaxHealth: 1,
-					Status:    game.PodRunning,
-				}
-				svc.Pods = append(svc.Pods, pod)
-				podID++
-			}
-		}
-	}
-}
-
-func (m *AppModel) executePlayerAttack() {
-	key := fmt.Sprintf("%d,%d", m.cursor[0], m.cursor[1])
-
-	// already shot here?
-	if _, exists := m.board.PlayerShots[key]; exists {
+func (m *AppModel) executeAITurn() {
+	if m.board == nil {
 		return
 	}
 
-	// check if we hit anything (simplified - just random chance for now)
-	// TODO: implement proper hit detection based on placed racks
-	hit := false
-	m.board.PlayerShots[key] = ShotResult{
-		Hit:   hit,
-		Coord: m.cursor,
+	// simple random targeting - find an unshot cell
+	for attempts := 0; attempts < 1000; attempts++ {
+		x := randInt(m.board.Width)
+		y := randInt(m.board.Height)
+		key := fmt.Sprintf("%d,%d", x, y)
+
+		if _, exists := m.board.EnemyShots[key]; !exists {
+			m.board.Attack(x, y, false)
+			return
+		}
 	}
 }
 
-func (m *AppModel) executeAITurn() {
-	// simple random targeting for now
-	// TODO: implement proper AI strategies
-}
-
 func (m *AppModel) checkWinCondition() {
-	// simplified win check
-	if m.enemyCompany != nil {
-		alive := m.enemyCompany.HealthyPodCount()
-		if alive == 0 && len(m.enemyCompany.Services) > 0 && m.enemyCompany.Services[0].Pods != nil {
-			m.gameOver = true
-			m.winner = "player"
-			m.state = StateGameOver
-		}
+	if m.board == nil {
+		return
+	}
+
+	// check if enemy fleet is destroyed
+	if !m.board.FleetHealthy(m.board.EnemyFleet) {
+		m.gameOver = true
+		m.winner = "player"
+		m.state = StateGameOver
+		return
+	}
+
+	// check if player fleet is destroyed
+	if !m.board.FleetHealthy(m.board.PlayerFleet) {
+		m.gameOver = true
+		m.winner = "enemy"
+		m.state = StateGameOver
+		return
 	}
 }
 
@@ -641,4 +605,22 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// simple random - using math/rand seeded by default in go 1.20+
+func randInt(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return int(uint32(n) * uint32(fastRand()) >> 32)
+}
+
+var fastRandState uint32 = 1
+
+func fastRand() uint32 {
+	// simple xorshift
+	fastRandState ^= fastRandState << 13
+	fastRandState ^= fastRandState >> 17
+	fastRandState ^= fastRandState << 5
+	return fastRandState
 }
