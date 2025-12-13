@@ -1,0 +1,644 @@
+package tui
+
+import (
+	"clustership/pkg/game"
+	"fmt"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// GameState represents the current phase of the game
+type GameState int
+
+const (
+	StateMenu GameState = iota
+	StateCompanySelect
+	StatePlacement
+	StateBattle
+	StateGameOver
+)
+
+// AppModel is the main Bubble Tea model for the game
+type AppModel struct {
+	state    GameState
+	styles   *Styles
+	width    int
+	height   int
+
+	// menu state
+	menuCursor int
+	menuItems  []string
+
+	// company selection
+	companies      []string
+	companyCursor  int
+	playerCompany  *game.Company
+	enemyCompany   *game.Company
+
+	// game state
+	board       *GameBoard
+	cursor      [2]int   // current cursor position on board
+	viewport    [2]int   // viewport offset for scrolling large boards
+	turn        int
+	isPlayerTurn bool
+	events      []game.GameEvent
+	gameOver    bool
+	winner      string
+
+	// display
+	showEmoji   bool
+	compactMode bool
+}
+
+// GameBoard holds the unified game board state (both fleets on same 100x100)
+type GameBoard struct {
+	Width       int
+	Height      int
+	PlayerFleet *game.Company
+	EnemyFleet  *game.Company
+
+	// shot tracking: "x,y" -> result
+	PlayerShots map[string]ShotResult
+	EnemyShots  map[string]ShotResult
+}
+
+// ShotResult tracks what happened when a cell was attacked
+type ShotResult struct {
+	Hit        bool
+	Coord      [2]int
+	HitRack    *game.Rack
+	HitPod     *game.Pod
+	KilledPod  bool
+	KilledRack bool
+	Message    string
+}
+
+// NewAppModel creates a fresh game instance
+func NewAppModel() AppModel {
+	return AppModel{
+		state:     StateMenu,
+		styles:    DefaultStyles(),
+		menuItems: []string{"New Game", "Settings", "Quit"},
+		companies: game.ListCompanies(),
+		showEmoji: false, // ascii mode by default, easier on terminals
+	}
+}
+
+// Init is the Bubble Tea init function
+func (m AppModel) Init() tea.Cmd {
+	return nil
+}
+
+// Update handles all input and state changes
+func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
+	case tea.KeyMsg:
+		// global keys first
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "q":
+			if m.state == StateMenu {
+				return m, tea.Quit
+			}
+			// q goes back to menu in other states
+			m.state = StateMenu
+			return m, nil
+		}
+
+		// state-specific handling
+		switch m.state {
+		case StateMenu:
+			return m.updateMenu(msg)
+		case StateCompanySelect:
+			return m.updateCompanySelect(msg)
+		case StatePlacement:
+			return m.updatePlacement(msg)
+		case StateBattle:
+			return m.updateBattle(msg)
+		case StateGameOver:
+			return m.updateGameOver(msg)
+		}
+	}
+
+	return m, nil
+}
+
+// updateMenu handles menu navigation
+func (m AppModel) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.menuCursor > 0 {
+			m.menuCursor--
+		}
+	case "down", "j":
+		if m.menuCursor < len(m.menuItems)-1 {
+			m.menuCursor++
+		}
+	case "enter", " ":
+		switch m.menuCursor {
+		case 0: // New Game
+			m.state = StateCompanySelect
+			m.companyCursor = 0
+		case 1: // Settings
+			m.showEmoji = !m.showEmoji // toggle emoji mode for now
+		case 2: // Quit
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+// updateCompanySelect handles company selection
+func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.companyCursor > 0 {
+			m.companyCursor--
+		}
+	case "down", "j":
+		if m.companyCursor < len(m.companies)-1 {
+			m.companyCursor++
+		}
+	case "enter", " ":
+		// load selected company as player
+		template, err := game.LoadCompanyTemplate(m.companies[m.companyCursor])
+		if err != nil {
+			// just skip on error for now
+			return m, nil
+		}
+		m.playerCompany = game.CompanyFromTemplate(template)
+
+		// pick a random enemy (different from player)
+		enemyID := m.pickRandomEnemy(m.companies[m.companyCursor])
+		enemyTemplate, _ := game.LoadCompanyTemplate(enemyID)
+		m.enemyCompany = game.CompanyFromTemplate(enemyTemplate)
+
+		// init the game board
+		m.initGameBoard()
+		m.state = StatePlacement
+	case "esc":
+		m.state = StateMenu
+	}
+	return m, nil
+}
+
+// updatePlacement handles ship placement phase (auto-place for now)
+func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", " ":
+		// auto-place and start battle
+		m.autoPlaceFleets()
+		m.state = StateBattle
+		m.isPlayerTurn = true
+		m.turn = 1
+	case "esc":
+		m.state = StateCompanySelect
+	}
+	return m, nil
+}
+
+// updateBattle handles the main battle phase
+func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.cursor[1] > 0 {
+			m.cursor[1]--
+		}
+	case "down", "j":
+		if m.cursor[1] < m.board.Height-1 {
+			m.cursor[1]++
+		}
+	case "left", "h":
+		if m.cursor[0] > 0 {
+			m.cursor[0]--
+		}
+	case "right", "l":
+		if m.cursor[0] < m.board.Width-1 {
+			m.cursor[0]++
+		}
+	case "enter", " ":
+		if m.isPlayerTurn {
+			m.executePlayerAttack()
+			m.checkWinCondition()
+			if !m.gameOver {
+				m.isPlayerTurn = false
+				m.executeAITurn()
+				m.checkWinCondition()
+				m.isPlayerTurn = true
+				m.turn++
+			}
+		}
+	case "tab":
+		m.compactMode = !m.compactMode
+	}
+	return m, nil
+}
+
+// updateGameOver handles game over screen
+func (m AppModel) updateGameOver(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", " ":
+		m.state = StateMenu
+		m = NewAppModel() // reset game
+	}
+	return m, nil
+}
+
+// View renders the current state
+func (m AppModel) View() string {
+	switch m.state {
+	case StateMenu:
+		return m.renderMenu()
+	case StateCompanySelect:
+		return m.renderCompanySelect()
+	case StatePlacement:
+		return m.renderPlacement()
+	case StateBattle:
+		return m.renderBattle()
+	case StateGameOver:
+		return m.renderGameOver()
+	}
+	return ""
+}
+
+// renderMenu draws the main menu
+func (m AppModel) renderMenu() string {
+	title := m.styles.Title.Render("CLUSTERSHIP")
+	subtitle := m.styles.Muted.Render("Battleship meets Kubernetes")
+
+	var menu string
+	for i, item := range m.menuItems {
+		if i == m.menuCursor {
+			menu += m.styles.MenuItemSelected.Render("> "+item) + "\n"
+		} else {
+			menu += m.styles.MenuItem.Render("  "+item) + "\n"
+		}
+	}
+
+	hint := m.styles.Muted.Render("\n[↑/↓] navigate  [enter] select  [q] quit")
+	if m.showEmoji {
+		hint += m.styles.Success.Render("  (emoji mode ON)")
+	}
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			subtitle,
+			"",
+			menu,
+			hint,
+		),
+	)
+}
+
+// renderCompanySelect draws the company selection screen
+func (m AppModel) renderCompanySelect() string {
+	title := m.styles.Title.Render("SELECT YOUR COMPANY")
+	subtitle := m.styles.Muted.Render("Choose who you'll defend")
+
+	var list string
+	for i, id := range m.companies {
+		template, _ := game.LoadCompanyTemplate(id)
+		if template == nil {
+			continue
+		}
+		line := fmt.Sprintf("%s %s", template.Emoji, template.Name)
+		if i == m.companyCursor {
+			list += m.styles.MenuItemSelected.Render("> "+line) + "\n"
+			// show description for selected
+			list += m.styles.Muted.Render("   "+template.Description) + "\n"
+		} else {
+			list += m.styles.MenuItem.Render("  "+line) + "\n"
+		}
+	}
+
+	hint := m.styles.Muted.Render("\n[↑/↓] navigate  [enter] select  [esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			subtitle,
+			"",
+			list,
+			hint,
+		),
+	)
+}
+
+// renderPlacement draws the placement phase (auto-place for now)
+func (m AppModel) renderPlacement() string {
+	title := m.styles.Title.Render("DEPLOYMENT PHASE")
+
+	var info string
+	if m.playerCompany != nil {
+		info = fmt.Sprintf("Your fleet: %s %s\n", m.playerCompany.Emoji, m.playerCompany.Name)
+		info += fmt.Sprintf("Regions: %d | Total Racks: %d\n", len(m.playerCompany.Regions), m.playerCompany.TotalRacks())
+	}
+	if m.enemyCompany != nil {
+		info += fmt.Sprintf("\nEnemy fleet: %s %s\n", m.enemyCompany.Emoji, m.enemyCompany.Name)
+	}
+
+	hint := m.styles.Muted.Render("\n[enter] auto-deploy and start battle  [esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			"",
+			info,
+			hint,
+		),
+	)
+}
+
+// renderBattle draws the main battle screen
+func (m AppModel) renderBattle() string {
+	// header
+	turnInfo := fmt.Sprintf("Turn: %d", m.turn)
+	if m.isPlayerTurn {
+		turnInfo += " | YOUR TURN"
+	} else {
+		turnInfo += " | Enemy turn..."
+	}
+	header := m.styles.Header.Render(
+		fmt.Sprintf("CLUSTERSHIP - %s vs %s   %s",
+			m.playerCompany.Emoji, m.enemyCompany.Emoji, turnInfo),
+	)
+
+	// board (simplified for now)
+	board := m.renderSimpleBoard()
+
+	// sidebar with service status
+	sidebar := m.renderServiceStatus()
+
+	// combine board and sidebar
+	main := lipgloss.JoinHorizontal(lipgloss.Top, board, "  ", sidebar)
+
+	// footer with controls
+	footer := m.styles.Footer.Render(
+		"[↑↓←→/hjkl] move  [enter] fire  [tab] toggle view  [q] quit",
+	)
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			main,
+			footer,
+		),
+	)
+}
+
+// renderSimpleBoard renders a simple view of the enemy board
+func (m AppModel) renderSimpleBoard() string {
+	if m.board == nil {
+		return "No board"
+	}
+
+	// show a 10x10 viewport for now
+	viewW, viewH := 10, 10
+	if m.compactMode {
+		viewW, viewH = 20, 20
+	}
+
+	// header row with column numbers
+	header := "   "
+	for x := 0; x < viewW; x++ {
+		header += fmt.Sprintf("%d ", (m.viewport[0]+x)%10)
+	}
+	header += "\n"
+
+	var grid string
+	for y := 0; y < viewH; y++ {
+		boardY := m.viewport[1] + y
+		if boardY >= m.board.Height {
+			break
+		}
+		// row number
+		grid += fmt.Sprintf("%2d ", boardY%100)
+
+		for x := 0; x < viewW; x++ {
+			boardX := m.viewport[0] + x
+			if boardX >= m.board.Width {
+				break
+			}
+
+			cell := m.getCellDisplay(boardX, boardY)
+
+			// highlight cursor
+			if boardX == m.cursor[0] && boardY == m.cursor[1] {
+				cell = m.styles.Cursor.Render(cell)
+			}
+
+			grid += cell + " "
+		}
+		grid += "\n"
+	}
+
+	cursorInfo := fmt.Sprintf("Target: (%d, %d)", m.cursor[0], m.cursor[1])
+
+	return m.styles.BoardArea.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			m.styles.Subtitle.Render("ENEMY TERRITORY"),
+			header+grid,
+			m.styles.Muted.Render(cursorInfo),
+		),
+	)
+}
+
+// getCellDisplay returns the display character for a board cell
+func (m AppModel) getCellDisplay(x, y int) string {
+	key := fmt.Sprintf("%d,%d", x, y)
+
+	// check if we've shot here
+	if result, ok := m.board.PlayerShots[key]; ok {
+		if result.Hit {
+			if m.showEmoji {
+				return EmojiHit
+			}
+			return m.styles.Hit.Render(SymHit)
+		}
+		if m.showEmoji {
+			return EmojiMiss
+		}
+		return m.styles.Miss.Render(SymMiss)
+	}
+
+	// unexplored
+	if m.showEmoji {
+		return EmojiWater
+	}
+	return m.styles.Water.Render(SymWater)
+}
+
+// renderServiceStatus shows the status of enemy services
+func (m AppModel) renderServiceStatus() string {
+	if m.enemyCompany == nil {
+		return ""
+	}
+
+	title := m.styles.Subtitle.Render("ENEMY SERVICES")
+
+	var services string
+	for _, svc := range m.enemyCompany.Services {
+		healthy := 0
+		total := len(svc.Pods)
+		for _, p := range svc.Pods {
+			if p.Status == game.PodRunning {
+				healthy++
+			}
+		}
+
+		// health bar
+		pct := 0
+		if total > 0 {
+			pct = (healthy * 100) / total
+		}
+		bar := m.renderHealthBar(pct)
+
+		status := fmt.Sprintf("%s %s %s", svc.Emoji, svc.Name[:min(12, len(svc.Name))], bar)
+		services += status + "\n"
+	}
+
+	return m.styles.Sidebar.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", services),
+	)
+}
+
+// renderHealthBar creates a simple health bar
+func (m AppModel) renderHealthBar(pct int) string {
+	width := 10
+	filled := (pct * width) / 100
+	empty := width - filled
+
+	bar := ""
+	for i := 0; i < filled; i++ {
+		bar += "█"
+	}
+	for i := 0; i < empty; i++ {
+		bar += "░"
+	}
+
+	style := m.styles.HealthGood
+	if pct < 50 {
+		style = m.styles.HealthMid
+	}
+	if pct < 25 {
+		style = m.styles.HealthBad
+	}
+
+	return style.Render("[" + bar + "]")
+}
+
+// renderGameOver shows the game over screen
+func (m AppModel) renderGameOver() string {
+	title := m.styles.Title.Render("GAME OVER")
+
+	result := m.styles.Success.Render("YOU WIN!")
+	if m.winner != "player" {
+		result = m.styles.Error.Render("YOU LOSE")
+	}
+
+	stats := fmt.Sprintf("Turns: %d", m.turn)
+
+	hint := m.styles.Muted.Render("\n[enter] return to menu")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Center,
+			title,
+			"",
+			result,
+			stats,
+			hint,
+		),
+	)
+}
+
+// helper functions
+
+func (m *AppModel) pickRandomEnemy(exclude string) string {
+	for _, id := range m.companies {
+		if id != exclude {
+			return id
+		}
+	}
+	return m.companies[0] // fallback
+}
+
+func (m *AppModel) initGameBoard() {
+	m.board = &GameBoard{
+		Width:       20, // start with 20x20 for testing
+		Height:      20,
+		PlayerFleet: m.playerCompany,
+		EnemyFleet:  m.enemyCompany,
+		PlayerShots: make(map[string]ShotResult),
+		EnemyShots:  make(map[string]ShotResult),
+	}
+}
+
+func (m *AppModel) autoPlaceFleets() {
+	// TODO: implement proper placement with affinity rules
+	// for now, just create pods for services
+	if m.enemyCompany != nil {
+		podID := 0
+		for _, svc := range m.enemyCompany.Services {
+			for i := 0; i < svc.Replicas; i++ {
+				pod := &game.Pod{
+					ID:        fmt.Sprintf("%s-pod-%d", svc.ID, podID),
+					ServiceID: svc.ID,
+					Health:    1,
+					MaxHealth: 1,
+					Status:    game.PodRunning,
+				}
+				svc.Pods = append(svc.Pods, pod)
+				podID++
+			}
+		}
+	}
+}
+
+func (m *AppModel) executePlayerAttack() {
+	key := fmt.Sprintf("%d,%d", m.cursor[0], m.cursor[1])
+
+	// already shot here?
+	if _, exists := m.board.PlayerShots[key]; exists {
+		return
+	}
+
+	// check if we hit anything (simplified - just random chance for now)
+	// TODO: implement proper hit detection based on placed racks
+	hit := false
+	m.board.PlayerShots[key] = ShotResult{
+		Hit:   hit,
+		Coord: m.cursor,
+	}
+}
+
+func (m *AppModel) executeAITurn() {
+	// simple random targeting for now
+	// TODO: implement proper AI strategies
+}
+
+func (m *AppModel) checkWinCondition() {
+	// simplified win check
+	if m.enemyCompany != nil {
+		alive := m.enemyCompany.HealthyPodCount()
+		if alive == 0 && len(m.enemyCompany.Services) > 0 && m.enemyCompany.Services[0].Pods != nil {
+			m.gameOver = true
+			m.winner = "player"
+			m.state = StateGameOver
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
