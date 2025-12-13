@@ -1,0 +1,83 @@
+{
+  "id": "aws",
+  "name": "Amazon Web Services",
+  "emoji": "☁️",
+  "description": "The cloud giant with massive global infrastructure",
+  "regions": [
+    {
+      "id": "us-east-1",
+      "name": "N. Virginia",
+      "emoji": "🇺🇸",
+      "racks": 6,
+      "latency_ms": 15
+    },
+    {
+      "id": "us-west-2",
+      "name": "Oregon",
+      "emoji": "🌲",
+      "racks": 4,
+      "latency_ms": 50
+    },
+    {
+      "id": "eu-west-1",
+      "name": "Ireland",
+      "emoji": "🇮🇪",
+      "racks": 3,
+      "latency_ms": 80
+    }
+  ],
+  "services": [
+    {
+      "id": "ec2-api",
+      "name": "EC2 Control Plane",
+      "emoji": "🖥️",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "critical",
+      "can_failover": true
+    },
+    {
+      "id": "s3-api",
+      "name": "S3 Storage",
+      "emoji": "🪣",
+      "replicas": 5,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "critical",
+      "can_failover": true
+    },
+    {
+      "id": "lambda",
+      "name": "Lambda Runtime",
+      "emoji": "⚡",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "none",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "rds",
+      "name": "RDS Database",
+      "emoji": "🗄️",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "cloudfront",
+      "name": "CloudFront CDN",
+      "emoji": "🌐",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "latency-critical",
+      "can_failover": true
+    }
+  ],
+  "ai_strategy": "hunter",
+  "difficulty": "hard"
+}

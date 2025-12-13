@@ -1,0 +1,83 @@
+{
+  "id": "google",
+  "name": "Google Cloud",
+  "emoji": "🔍",
+  "description": "Search giant with AI-powered infrastructure",
+  "regions": [
+    {
+      "id": "us-central1",
+      "name": "Iowa",
+      "emoji": "🌽",
+      "racks": 5,
+      "latency_ms": 25
+    },
+    {
+      "id": "europe-west1",
+      "name": "Belgium",
+      "emoji": "🇧🇪",
+      "racks": 3,
+      "latency_ms": 90
+    },
+    {
+      "id": "asia-east1",
+      "name": "Taiwan",
+      "emoji": "🇹🇼",
+      "racks": 3,
+      "latency_ms": 140
+    }
+  ],
+  "services": [
+    {
+      "id": "search",
+      "name": "Search Index",
+      "emoji": "🔍",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "critical",
+      "can_failover": true
+    },
+    {
+      "id": "bigquery",
+      "name": "BigQuery",
+      "emoji": "📊",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "gke",
+      "name": "GKE Control Plane",
+      "emoji": "☸️",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "spanner",
+      "name": "Cloud Spanner",
+      "emoji": "🗄️",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "vertex-ai",
+      "name": "Vertex AI",
+      "emoji": "🤖",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "none",
+      "criticality": "medium",
+      "can_failover": true
+    }
+  ],
+  "ai_strategy": "aggressive",
+  "difficulty": "hard"
+}
