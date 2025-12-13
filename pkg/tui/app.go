@@ -475,13 +475,14 @@ func (m AppModel) getCellDisplay(x, y int) string {
 	}
 }
 
-// renderServiceStatus shows the status of enemy services
+// renderServiceStatus shows the status of enemy services and K8s events
 func (m AppModel) renderServiceStatus() string {
 	if m.enemyCompany == nil {
 		return ""
 	}
 
-	title := m.styles.Subtitle.Render("ENEMY SERVICES")
+	// service status section
+	serviceTitle := m.styles.Subtitle.Render("ENEMY SERVICES")
 
 	var services string
 	for _, svc := range m.enemyCompany.Services {
@@ -500,12 +501,76 @@ func (m AppModel) renderServiceStatus() string {
 		}
 		bar := m.renderHealthBar(pct)
 
-		status := fmt.Sprintf("%s %s %s", svc.Emoji, svc.Name[:min(12, len(svc.Name))], bar)
+		// truncate name to fit
+		name := svc.Name
+		if len(name) > 12 {
+			name = name[:12]
+		}
+		status := fmt.Sprintf("%s %-12s %s", svc.Emoji, name, bar)
 		services += status + "\n"
 	}
 
+	// events section
+	eventTitle := m.styles.Subtitle.Render("K8S EVENTS")
+	var events string
+	if m.board != nil && len(m.board.Events) > 0 {
+		// show last 5 events
+		start := len(m.board.Events) - 5
+		if start < 0 {
+			start = 0
+		}
+		for _, evt := range m.board.Events[start:] {
+			icon := "  "
+			style := m.styles.Normal
+			switch evt.Type {
+			case "Normal":
+				icon = EmojiPodOK
+				style = m.styles.Success
+			case "Warning":
+				icon = EmojiPodWarn
+				style = m.styles.Warning
+			case "Error":
+				icon = EmojiPodDead
+				style = m.styles.Error
+			}
+			// truncate message
+			msg := evt.Message
+			if len(msg) > 25 {
+				msg = msg[:25] + "..."
+			}
+			if m.showEmoji {
+				events += fmt.Sprintf("%s %s\n", icon, style.Render(msg))
+			} else {
+				events += fmt.Sprintf("[%s] %s\n", evt.Type[:1], style.Render(msg))
+			}
+		}
+	} else {
+		events = m.styles.Muted.Render("No events yet...")
+	}
+
+	// fleet stats
+	statsTitle := m.styles.Subtitle.Render("FLEET STATUS")
+	var stats string
+	if m.board != nil {
+		enemyStats := m.board.GetFleetStats(m.board.EnemyFleet)
+		playerStats := m.board.GetFleetStats(m.board.PlayerFleet)
+
+		stats = fmt.Sprintf("Enemy:  %d/%d pods | %d/%d racks\n",
+			enemyStats.RunningPods, enemyStats.TotalPods,
+			enemyStats.AliveRacks, enemyStats.TotalRacks)
+		stats += fmt.Sprintf("Player: %d/%d pods | %d/%d racks",
+			playerStats.RunningPods, playerStats.TotalPods,
+			playerStats.AliveRacks, playerStats.TotalRacks)
+	}
+
 	return m.styles.Sidebar.Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, "", services),
+		lipgloss.JoinVertical(lipgloss.Left,
+			serviceTitle, services,
+			"",
+			eventTitle, events,
+			"",
+			statsTitle, m.styles.Muted.Render(stats),
+		),
 	)
 }
 
