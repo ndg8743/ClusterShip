@@ -38,8 +38,9 @@ type AppModel struct {
 
 	// game state
 	board        *Board
-	cursor       [2]int // current cursor position on board
-	viewport     [2]int // viewport offset for scrolling large boards
+	ai           *AIPlayer // enemy AI
+	cursor       [2]int    // current cursor position on board
+	viewport     [2]int    // viewport offset for scrolling large boards
 	turn         int
 	isPlayerTurn bool
 	gameOver     bool
@@ -170,6 +171,14 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", " ":
 		// create board with auto-placed fleets
 		m.board = NewBoard(20, 20, m.playerCompany, m.enemyCompany)
+
+		// create AI with enemy's strategy
+		strategy := game.AIHunter // default
+		if m.enemyCompany != nil {
+			strategy = m.enemyCompany.AIStrategy
+		}
+		m.ai = NewAIPlayer(strategy, 20, 20)
+
 		m.state = StateBattle
 		m.isPlayerTurn = true
 		m.turn = 1
@@ -561,21 +570,14 @@ func (m *AppModel) pickRandomEnemy(exclude string) string {
 }
 
 func (m *AppModel) executeAITurn() {
-	if m.board == nil {
+	if m.board == nil || m.ai == nil {
 		return
 	}
 
-	// simple random targeting - find an unshot cell
-	for attempts := 0; attempts < 1000; attempts++ {
-		x := randInt(m.board.Width)
-		y := randInt(m.board.Height)
-		key := fmt.Sprintf("%d,%d", x, y)
-
-		if _, exists := m.board.EnemyShots[key]; !exists {
-			m.board.Attack(x, y, false)
-			return
-		}
-	}
+	// let the AI pick a target
+	target := m.ai.PickTarget()
+	result, _ := m.board.Attack(target[0], target[1], false)
+	m.ai.RecordResult(target[0], target[1], result)
 }
 
 func (m *AppModel) checkWinCondition() {
@@ -605,22 +607,4 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// simple random - using math/rand seeded by default in go 1.20+
-func randInt(n int) int {
-	if n <= 0 {
-		return 0
-	}
-	return int(uint32(n) * uint32(fastRand()) >> 32)
-}
-
-var fastRandState uint32 = 1
-
-func fastRand() uint32 {
-	// simple xorshift
-	fastRandState ^= fastRandState << 13
-	fastRandState ^= fastRandState >> 17
-	fastRandState ^= fastRandState << 5
-	return fastRandState
 }
