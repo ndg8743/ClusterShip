@@ -240,7 +240,17 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateBattle handles the main battle phase
 func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// ignore input during animation
+	// these keys work even during animation
+	switch msg.String() {
+	case "v":
+		// toggle debug mode (show all ships, no fog of war)
+		m.debugMode = !m.debugMode
+		return m, nil
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+
+	// ignore other input during animation
 	if m.animating {
 		return m, nil
 	}
@@ -308,9 +318,6 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "tab":
 		m.compactMode = !m.compactMode
-	case "v":
-		// toggle debug mode (show all ships, no fog of war)
-		m.debugMode = !m.debugMode
 	}
 	return m, nil
 }
