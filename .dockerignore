@@ -1,67 +1,24 @@
-# Git files
+# Development and documentation
 .git
-.gitignore
-.gitattributes
-
-# CI/CD
 .github
-.gitlab-ci.yml
-Jenkinsfile
-.travis.yml
-.circleci
-
-# Documentation
-README.md
 *.md
 docs/
+Jenkinsfile
+Makefile
 
-# Build artifacts
+# Build artifacts and tests
 bin/
 dist/
-*.exe
-*.dll
-*.so
-*.dylib
-*.test
-*.out
+coverage/
+tests/
 
-# IDE and editor files
+# IDE and local files
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Test coverage
-coverage/
-*.cover
-*.coverprofile
-
-# Go specific
-vendor/
-
-# Configuration
-.env
-.env.local
-*.local
-
-# Temporary files
-tmp/
-temp/
-*.tmp
-
-# Logs
-*.log
-
-# OS files
-Thumbs.db
-.DS_Store
-
-# Claude files
 .claude/
 .mcp.json
+.env*
 
-# Local build files
+# Binary
 clustership
 clustership.exe

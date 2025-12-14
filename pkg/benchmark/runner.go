@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -365,5 +366,6 @@ func (w *Worker) runGPUBench(ctx context.Context) {
 var workerCounter atomic.Int64
 
 func generateWorkerID() string {
-	return "worker-" + string(rune('A'+workerCounter.Add(1)%26))
+	count := workerCounter.Add(1)
+	return fmt.Sprintf("worker-%d", count)
 }

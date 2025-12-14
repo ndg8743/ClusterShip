@@ -224,8 +224,21 @@ func TestAttack(t *testing.T) {
 			t.Parallel()
 
 			b := tt.setupBoard()
+
+			// If x, y not set (both 0), try to get enemy ship position
+			x, y := tt.x, tt.y
+			if x == 0 && y == 0 && b.EnemyFleet != nil {
+				if len(b.EnemyFleet.Regions) > 0 && len(b.EnemyFleet.Regions[0].Racks) > 0 {
+					pos := b.EnemyFleet.Regions[0].Racks[0].Position
+					x, y = pos[0], pos[1]
+				}
+			}
+
+			// Perform the attack
+			result, _ := b.Attack(x, y, tt.byPlayer)
+
 			if tt.validate != nil {
-				tt.validate(t, b, nil)
+				tt.validate(t, b, result)
 			}
 		})
 	}

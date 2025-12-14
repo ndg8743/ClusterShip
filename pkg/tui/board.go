@@ -201,6 +201,11 @@ func (b *Board) initPods(fleet *Fleet) {
 
 	podID := 0
 	for _, svc := range fleet.Company.Services {
+		// If pods already exist (e.g., from tests), skip initialization for this service
+		if len(svc.Pods) > 0 {
+			continue
+		}
+
 		svc.Pods = make([]*game.Pod, 0)
 
 		for i := 0; i < svc.Replicas; i++ {

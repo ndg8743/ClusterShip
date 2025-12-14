@@ -322,7 +322,20 @@ func (ai *AIPlayer) queueNeighborsAgainst(x, y int, oppID string) {
 		ai.HitQueuePerOpponent[oppID] = make([][2]int, 0)
 	}
 
+	// First, clean the existing queue by removing already-guessed coordinates
 	guessed := ai.GuessedPerOpponent[oppID]
+	if guessed != nil {
+		cleanedQueue := make([][2]int, 0, len(ai.HitQueuePerOpponent[oppID]))
+		for _, coord := range ai.HitQueuePerOpponent[oppID] {
+			key := fmt.Sprintf("%d,%d", coord[0], coord[1])
+			if !guessed[key] {
+				cleanedQueue = append(cleanedQueue, coord)
+			}
+		}
+		ai.HitQueuePerOpponent[oppID] = cleanedQueue
+	}
+
+	// Now add new neighbors
 	for _, n := range neighbors {
 		if !ai.isValidCoord(n[0], n[1]) {
 			continue
