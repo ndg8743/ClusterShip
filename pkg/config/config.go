@@ -1,6 +1,7 @@
 package config
 
 import (
+	"clustership/pkg/hardware"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,9 +9,9 @@ import (
 
 // GameConfig holds all configurable game settings
 type GameConfig struct {
-	// Board dimensions
-	BoardWidth  int `json:"board_width"`
-	BoardHeight int `json:"board_height"`
+	// Board dimensions (int64 for massive scale support)
+	BoardWidth  int64 `json:"board_width"`
+	BoardHeight int64 `json:"board_height"`
 
 	// Ships/Regions per player
 	ShipsPerPlayer int `json:"ships_per_player"`
@@ -30,6 +31,16 @@ type GameConfig struct {
 	EnableRealK8s bool   `json:"enable_real_k8s"`
 	K8sNamespace  string `json:"k8s_namespace"`
 	Kubeconfig    string `json:"kubeconfig"`
+
+	// GPU/Benchmark settings
+	EnableGPU      bool `json:"enable_gpu"`
+	BenchmarkMode  bool `json:"benchmark_mode"`
+	UseSparseBoard bool `json:"use_sparse_board"`
+
+	// Detected hardware info (not persisted)
+	detectedTier   hardware.PerformanceTier `json:"-"`
+	detectedLimits *hardware.TierLimits     `json:"-"`
+	systemInfo     *hardware.SystemInfo     `json:"-"`
 }
 
 // configDir returns config directory path
@@ -80,51 +91,128 @@ func (c *GameConfig) Save() error {
 	return os.WriteFile(configPath(), data, 0644)
 }
 
-// Validate ensures config values are within acceptable ranges
+// DetectHardware performs hardware detection and sets tier limits
+func (c *GameConfig) DetectHardware() {
+	c.systemInfo = hardware.Detect()
+	c.detectedTier = hardware.DetermineTier(c.systemInfo)
+	limits := hardware.GetTierLimits(c.detectedTier)
+	c.detectedLimits = &limits
+}
+
+// GetTier returns the detected performance tier
+func (c *GameConfig) GetTier() hardware.PerformanceTier {
+	if c.detectedLimits == nil {
+		c.DetectHardware()
+	}
+	return c.detectedTier
+}
+
+// GetLimits returns the tier-based limits
+func (c *GameConfig) GetLimits() *hardware.TierLimits {
+	if c.detectedLimits == nil {
+		c.DetectHardware()
+	}
+	return c.detectedLimits
+}
+
+// GetSystemInfo returns detected system hardware info
+func (c *GameConfig) GetSystemInfo() *hardware.SystemInfo {
+	if c.systemInfo == nil {
+		c.DetectHardware()
+	}
+	return c.systemInfo
+}
+
+// Validate ensures config values are within tier-based acceptable ranges
 func (c *GameConfig) Validate() {
+	// Ensure hardware detection is done
+	if c.detectedLimits == nil {
+		c.DetectHardware()
+	}
+	limits := c.detectedLimits
+
+	// Board dimensions
 	if c.BoardWidth < 20 {
 		c.BoardWidth = 20
 	}
-	if c.BoardWidth > 100 {
-		c.BoardWidth = 100
+	if c.BoardWidth > limits.MaxBoardWidth {
+		c.BoardWidth = limits.MaxBoardWidth
 	}
 	if c.BoardHeight < 20 {
 		c.BoardHeight = 20
 	}
-	if c.BoardHeight > 100 {
-		c.BoardHeight = 100
+	if c.BoardHeight > limits.MaxBoardHeight {
+		c.BoardHeight = limits.MaxBoardHeight
 	}
+
+	// Ships per player
 	if c.ShipsPerPlayer < 1 {
 		c.ShipsPerPlayer = 1
 	}
-	if c.ShipsPerPlayer > 10 {
-		c.ShipsPerPlayer = 10
+	if c.ShipsPerPlayer > limits.MaxShipsTotal {
+		c.ShipsPerPlayer = limits.MaxShipsTotal
 	}
+
+	// Racks per ship
 	if c.RacksPerShip < 2 {
 		c.RacksPerShip = 2
 	}
-	if c.RacksPerShip > 7 {
-		c.RacksPerShip = 7
+	if c.RacksPerShip > limits.MaxRacksPerShip {
+		c.RacksPerShip = limits.MaxRacksPerShip
 	}
+
+	// Pods per rack
 	if c.PodsPerRack < 1 {
 		c.PodsPerRack = 1
 	}
-	if c.PodsPerRack > 10 {
-		c.PodsPerRack = 10
+	if c.PodsPerRack > 100 {
+		c.PodsPerRack = 100
 	}
+
+	// Max bots/companies
 	if c.MaxBots < 1 {
 		c.MaxBots = 1
 	}
-	if c.MaxBots > 6 {
-		c.MaxBots = 6
+	if c.MaxBots > limits.MaxCompanies {
+		c.MaxBots = limits.MaxCompanies
 	}
-	if c.TurnDelayMs < 50 {
-		c.TurnDelayMs = 50
+
+	// Timing
+	if c.TurnDelayMs < 10 {
+		c.TurnDelayMs = 10
 	}
-	if c.TurnDelayMs > 2000 {
-		c.TurnDelayMs = 2000
+	if c.TurnDelayMs > 5000 {
+		c.TurnDelayMs = 5000
 	}
+
+	// K8s namespace
 	if c.K8sNamespace == "" {
 		c.K8sNamespace = "clustership"
 	}
+
+	// Auto-enable sparse board for large scales
+	if c.BoardWidth > 1000 || c.BoardHeight > 1000 {
+		c.UseSparseBoard = true
+	}
+
+	// Auto-disable GPU if not available
+	if !limits.UseGPU {
+		c.EnableGPU = false
+	}
+}
+
+// BoardWidthInt returns board width as int (for backward compatibility)
+func (c *GameConfig) BoardWidthInt() int {
+	if c.BoardWidth > int64(^uint(0)>>1) {
+		return int(^uint(0) >> 1) // max int
+	}
+	return int(c.BoardWidth)
+}
+
+// BoardHeightInt returns board height as int (for backward compatibility)
+func (c *GameConfig) BoardHeightInt() int {
+	if c.BoardHeight > int64(^uint(0)>>1) {
+		return int(^uint(0) >> 1) // max int
+	}
+	return int(c.BoardHeight)
 }

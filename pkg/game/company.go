@@ -96,16 +96,6 @@ const (
 	AIAggressive AIStrategy = "aggressive" // target high-value first
 )
 
-// WinCondition describes how the game can end
-type WinCondition string
-
-const (
-	WinKnockout    WinCondition = "knockout"    // all enemy pods terminated
-	WinDegradation WinCondition = "degradation" // >50% pods Pending for N turns
-	WinCritical    WinCondition = "critical"    // critical service offline
-	WinLatency     WinCondition = "latency"     // global latency too high
-)
-
 // GameEvent represents a K8s-style event for the sidebar
 type GameEvent struct {
 	Timestamp   int64  // turn number or ms

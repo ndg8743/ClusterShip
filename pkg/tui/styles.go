@@ -14,6 +14,12 @@ var (
 	colorHit       = lipgloss.Color("208") // orange/fire
 	colorMiss      = lipgloss.Color("245") // light gray
 	colorShip      = lipgloss.Color("255") // white
+
+	// company colors
+	colorPlayer  = lipgloss.Color("250") // bright gray/white for player
+	colorNetflix = lipgloss.Color("196") // red
+	colorAWS     = lipgloss.Color("208") // orange
+	colorGoogle  = lipgloss.Color("39")  // blue
 )
 
 // Styles holds all the lipgloss styles for the TUI
@@ -52,6 +58,9 @@ type Styles struct {
 	// menu
 	MenuItem         lipgloss.Style
 	MenuItemSelected lipgloss.Style
+
+	// panels
+	Box lipgloss.Style
 }
 
 // DefaultStyles returns the default style configuration
@@ -155,6 +164,12 @@ func DefaultStyles() *Styles {
 			Foreground(colorPrimary).
 			PaddingLeft(2).
 			SetString("> "),
+
+		Box: lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(colorSecondary).
+			Padding(1).
+			MarginTop(1),
 	}
 }
 
@@ -163,15 +178,27 @@ const (
 	SymWater     = "~"
 	SymMiss      = "o"
 	SymHit       = "X"
-	SymShip      = "S"
-	SymDestroyed = "#"
-	SymCursor    = "+"
-	SymEmpty     = " "
+	SymShip      = "#"
+	SymDestroyed = "!"
 )
 
-// status symbols
-const (
-	SymPodOK   = "+"
-	SymPodWarn = "!"
-	SymPodDead = "x"
-)
+// CompanyColor returns the color for a company ID
+func CompanyColor(companyID string) lipgloss.Color {
+	switch companyID {
+	case "player":
+		return colorPlayer
+	case "netflix":
+		return colorNetflix
+	case "aws":
+		return colorAWS
+	case "google":
+		return colorGoogle
+	default:
+		return colorShip
+	}
+}
+
+// CompanyStyle returns a styled ship display for a company
+func CompanyStyle(companyID string) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(CompanyColor(companyID)).Bold(true)
+}

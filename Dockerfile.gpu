@@ -1,0 +1,57 @@
+# ClusterShip GPU-enabled Dockerfile
+# Supports NVIDIA GPUs for benchmark mode
+
+# Build stage
+FROM golang:1.22-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /app
+
+# Copy dependency files first for caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and build
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o clustership ./cmd/clustership
+
+# Runtime stage with CUDA support
+FROM nvidia/cuda:12.2-runtime-ubuntu22.04
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    stress-ng \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create models directory and download tiny LLM
+RUN mkdir -p /opt/clustership/models && \
+    curl -L -o /opt/clustership/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+    "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" || \
+    echo "Model download optional - will run in CPU mode"
+
+# Create non-root user
+RUN groupadd -r clustership && useradd -r -g clustership -d /app clustership
+
+WORKDIR /app
+
+# Copy binary and templates
+COPY --from=builder /app/clustership .
+COPY templates/ ./templates/
+
+# Set ownership
+RUN chown -R clustership:clustership /app /opt/clustership
+
+USER clustership
+
+# Environment
+ENV TERM=xterm-256color
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV CLUSTERSHIP_GPU=true
+ENV CLUSTERSHIP_MODELS=/opt/clustership/models
+
+ENTRYPOINT ["./clustership"]

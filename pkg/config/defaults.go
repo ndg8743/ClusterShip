@@ -8,7 +8,7 @@ import (
 // Default returns the default game configuration
 func Default() *GameConfig {
 	return &GameConfig{
-		// Board
+		// Board (int64 for massive scale support)
 		BoardWidth:  50,
 		BoardHeight: 50,
 
@@ -30,6 +30,11 @@ func Default() *GameConfig {
 		EnableRealK8s: false,
 		K8sNamespace:  "clustership",
 		Kubeconfig:    defaultKubeconfig(),
+
+		// GPU/Benchmark (auto-detected)
+		EnableGPU:      false,
+		BenchmarkMode:  false,
+		UseSparseBoard: false,
 	}
 }
 

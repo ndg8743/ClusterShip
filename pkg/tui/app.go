@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"clustership/pkg/benchmark"
 	"clustership/pkg/config"
 	"clustership/pkg/game"
 	"clustership/pkg/k8s"
@@ -43,6 +44,16 @@ type k8sPollMsg struct{}
 func doK8sPoll() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return k8sPollMsg{}
+	})
+}
+
+// benchmarkPollMsg triggers benchmark metrics update
+type benchmarkPollMsg struct{}
+
+// doBenchmarkPoll returns a command that polls benchmark metrics
+func doBenchmarkPoll() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return benchmarkPollMsg{}
 	})
 }
 
@@ -163,6 +174,11 @@ type AppModel struct {
 	k8sDeployed  bool                              // whether K8s resources are deployed
 	k8sError     error                             // any K8s connection error
 	k8sPodEvents []k8s.PodEvent                    // recent K8s events for display
+
+	// Benchmark fields
+	benchmarkRunner  *benchmark.Runner          // manages benchmark workers
+	benchmarkMetrics *benchmark.MetricsSnapshot // cached metrics for display
+	benchmarkMode    bool                       // true when running as benchmark
 }
 
 // NewAppModel creates a fresh game instance
@@ -346,7 +362,12 @@ func (m *AppModel) performAttackWithK8sSync(x, y int, attackerID, targetID strin
 
 	// If K8s enabled and we killed a pod, delete the real K8s pod
 	if m.cfg.EnableRealK8s && m.k8sClient != nil && result != nil && result.KilledPod && result.HitPod != nil {
-		m.deleteK8sPodForGamePod(result.HitPod, targetID)
+		// Determine target company from board's cell owner map
+		key := fmt.Sprintf("%d,%d", x, y)
+		companyID := m.board.CellOwner[key]
+		if companyID != "" {
+			m.deleteK8sPodForGamePod(result.HitPod, companyID)
+		}
 	}
 
 	return result, events
@@ -493,6 +514,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case benchmarkPollMsg:
+		// Update benchmark metrics during battle
+		if m.benchmarkRunner != nil && m.benchmarkRunner.IsRunning() {
+			snapshot := m.benchmarkRunner.GetMetrics().Snapshot()
+			m.benchmarkMetrics = &snapshot
+			// Update game metrics
+			m.benchmarkRunner.GetMetrics().GameFPS.Store(int64(1000 / max(1, m.cfg.TurnDelayMs)))
+			m.benchmarkRunner.GetMetrics().BoardUpdates.Add(1)
+			m.benchmarkRunner.GetMetrics().CalculateScore()
+		}
+		// Continue polling if benchmark is running
+		if m.state == StateBattle && m.benchmarkMode && m.benchmarkRunner != nil {
+			return m, doBenchmarkPoll()
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// global keys first
 		switch msg.String() {
@@ -502,9 +539,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == StateMenu {
 				return m, tea.Quit
 			}
-			// Cleanup K8s resources when leaving battle
+			// Cleanup resources when leaving battle
 			if m.state == StateBattle || m.state == StateGameOver {
 				m.cleanupK8sResources()
+				m.stopBenchmarkWorkers()
 			}
 			// q goes back to menu in other states
 			m.state = StateMenu
@@ -606,8 +644,10 @@ func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = StateEnemyCountSelect
 		m.enemyCountCursor = 0
 		m.maxEnemies = len(m.companies) - 1 // all except player
-		if m.maxEnemies > 5 {
-			m.maxEnemies = 5
+		// Use tier-based limit instead of hardcoded cap
+		limits := m.cfg.GetLimits()
+		if m.maxEnemies > limits.MaxCompanies-1 {
+			m.maxEnemies = limits.MaxCompanies - 1
 		}
 	case "esc":
 		m.state = StateMenu
@@ -720,7 +760,8 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Create multi-company board using config dimensions
-		m.board = NewMultiBoard(m.cfg.BoardWidth, m.cfg.BoardHeight, allCompanies)
+		boardW, boardH := m.cfg.BoardWidthInt(), m.cfg.BoardHeightInt()
+		m.board = NewMultiBoard(boardW, boardH, allCompanies)
 
 		// Build opponent list for each AI
 		allIDs := make([]string, 0, len(allCompanies))
@@ -737,7 +778,7 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					opponents = append(opponents, id)
 				}
 			}
-			m.ais[enemy.ID] = NewMultiAIPlayer(enemy.ID, enemy.AIStrategy, m.cfg.BoardWidth, m.cfg.BoardHeight, opponents)
+			m.ais[enemy.ID] = NewMultiAIPlayer(enemy.ID, enemy.AIStrategy, boardW, boardH, opponents)
 		}
 
 		// Legacy single AI
@@ -758,14 +799,14 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			for _, enemy := range m.enemyCompanies {
 				opponents = append(opponents, enemy.ID)
 			}
-			m.playerAI = NewMultiAIPlayer("player", game.AIHunter, m.cfg.BoardWidth, m.cfg.BoardHeight, opponents)
+			m.playerAI = NewMultiAIPlayer("player", game.AIHunter, boardW, boardH, opponents)
 		}
 
 		// Start cursor in center of board
-		m.cursor = [2]int{m.cfg.BoardWidth / 2, m.cfg.BoardHeight / 2}
+		m.cursor = [2]int{boardW / 2, boardH / 2}
 		// Calculate viewport with bounds checking to prevent negative values
-		vpX := m.cfg.BoardWidth/2 - m.viewW/2
-		vpY := m.cfg.BoardHeight/2 - m.viewH/2
+		vpX := boardW/2 - m.viewW/2
+		vpY := boardH/2 - m.viewH/2
 		if vpX < 0 {
 			vpX = 0
 		}
@@ -787,6 +828,12 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Initialize benchmark mode in demo
+		if m.demoMode && m.cfg.BenchmarkMode {
+			m.benchmarkMode = true
+			m.startBenchmarkWorkers()
+		}
+
 		m.state = StateBattle
 		m.isPlayerTurn = true
 		m.turn = 1
@@ -802,6 +849,11 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// In demo mode, start auto-play
 		if m.demoMode {
 			cmds = append(cmds, doTickWithDelay(m.cfg.TurnDelayMs))
+		}
+
+		// Start benchmark polling if benchmark mode
+		if m.benchmarkMode && m.benchmarkRunner != nil {
+			cmds = append(cmds, doBenchmarkPoll())
 		}
 
 		if len(cmds) > 0 {
@@ -1452,21 +1504,37 @@ func (m AppModel) renderSettings() string {
 	)
 }
 
-// renderSettingsBoard draws board size config
+// renderSettingsBoard draws board size config with hardware info
 func (m AppModel) renderSettingsBoard() string {
 	title := m.styles.Title.Render("BOARD SETTINGS")
 
-	info := fmt.Sprintf("Width:  %d  [</>]\n", m.cfg.BoardWidth)
-	info += fmt.Sprintf("Height: %d  [^/v]\n", m.cfg.BoardHeight)
+	// Get hardware limits
+	limits := m.cfg.GetLimits()
+	sys := m.cfg.GetSystemInfo()
+	tier := m.cfg.GetTier()
+
+	info := fmt.Sprintf("Width:  %d  [</>]  (max: %d)\n", m.cfg.BoardWidth, limits.MaxBoardWidth)
+	info += fmt.Sprintf("Height: %d  [^/v]  (max: %d)\n", m.cfg.BoardHeight, limits.MaxBoardHeight)
 
 	visual := fmt.Sprintf("\n%dx%d board = %d cells\n",
 		m.cfg.BoardWidth, m.cfg.BoardHeight,
 		m.cfg.BoardWidth*m.cfg.BoardHeight)
 
+	// Hardware info
+	hwInfo := fmt.Sprintf("\n--- HARDWARE ---\n")
+	hwInfo += fmt.Sprintf("Tier: %s\n", tier.String())
+	hwInfo += fmt.Sprintf("CPU: %d cores\n", sys.CPUCores)
+	hwInfo += fmt.Sprintf("RAM: %d MB\n", sys.TotalRAMMB)
+	if sys.GPU.Available {
+		hwInfo += fmt.Sprintf("GPU: %s (%d MB)\n", sys.GPU.Model, sys.GPU.MemoryMB)
+	} else {
+		hwInfo += "GPU: None detected\n"
+	}
+
 	hint := m.styles.Muted.Render("\n[arrows] adjust  [enter/esc] back")
 
 	return m.styles.App.Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
+		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hwInfo, hint),
 	)
 }
 
@@ -1752,9 +1820,13 @@ func (m AppModel) renderMapView() string {
 		turnInfo += " | YOUR TURN"
 	}
 	viewIndicator := fmt.Sprintf(" [VIEW 1/5]")
+	modeIndicator := ""
+	if m.benchmarkMode {
+		modeIndicator = " [BENCHMARK]"
+	}
 	header := m.styles.Header.Render(
-		fmt.Sprintf("CLUSTERSHIP - %s vs %s   %s%s",
-			m.playerCompany.Name, m.enemyCompany.Name, turnInfo, viewIndicator),
+		fmt.Sprintf("CLUSTERSHIP - %s vs %s   %s%s%s",
+			m.playerCompany.Name, m.enemyCompany.Name, turnInfo, viewIndicator, modeIndicator),
 	)
 
 	// board
@@ -1762,6 +1834,12 @@ func (m AppModel) renderMapView() string {
 
 	// sidebar with service status and events
 	sidebar := m.renderServiceStatus()
+
+	// Add benchmark metrics panel if in benchmark mode
+	if m.benchmarkMode && m.benchmarkMetrics != nil {
+		benchPanel := m.renderBenchmarkMetrics()
+		sidebar = lipgloss.JoinVertical(lipgloss.Left, sidebar, "\n", benchPanel)
+	}
 
 	// combine board and sidebar
 	main := lipgloss.JoinHorizontal(lipgloss.Top, board, "  ", sidebar)
@@ -2403,13 +2481,18 @@ func (m AppModel) renderSimpleBoard() string {
 	// Hover info - show details about what's at cursor position
 	hoverInfo := m.getHoverInfo()
 
-	// legend
-	legend := fmt.Sprintf("%s=Water  %s=Miss  %s=Hit  %s=Ship  %s=Destroyed",
+	// legend with company colors
+	legend := fmt.Sprintf("%s=Water  %s=Miss  %s=Hit  %s=Yours  %s=Destroyed",
 		m.styles.Water.Render(SymWater),
 		m.styles.Miss.Render(SymMiss),
 		m.styles.Hit.Render(SymHit),
-		m.styles.Ship.Render(SymShip),
+		CompanyStyle("player").Render(SymShip),
 		m.styles.Destroyed.Render(SymDestroyed))
+
+	// add enemy company colors to legend
+	for _, enemy := range m.enemyCompanies {
+		legend += fmt.Sprintf("  %s=%s", CompanyStyle(enemy.ID).Render(SymShip), enemy.Name)
+	}
 
 	// controls
 	controls := "[arrows] move  [WASD] pan  [enter] fire  [p] pods  [v] debug"
@@ -2462,12 +2545,17 @@ func (m AppModel) getUnifiedCellDisplay(x, y int) string {
 		return m.styles.Miss.Render(SymMiss)
 	}
 
+	// show player ships with player color
 	if enemyState == CellShip {
-		return m.styles.Ship.Render(SymShip)
+		return CompanyStyle("player").Render(SymShip)
 	}
 
-	if m.debugMode && m.board.HasEnemyShipAt(x, y) {
-		return m.styles.Ship.Render(SymShip)
+	// show enemy ships in debug mode with their company color
+	if m.debugMode {
+		ownerID := m.board.GetCellOwner(x, y)
+		if ownerID != "" && ownerID != "player" {
+			return CompanyStyle(ownerID).Render(SymShip)
+		}
 	}
 
 	return m.styles.Water.Render(SymWater)
@@ -3174,4 +3262,134 @@ func (m *AppModel) getHoverInfo() string {
 	}
 
 	return info
+}
+
+// startBenchmarkWorkers initializes and starts benchmark workers for all companies
+func (m *AppModel) startBenchmarkWorkers() {
+	m.benchmarkRunner = benchmark.NewRunner()
+	m.benchmarkRunner.Start()
+
+	// Create workers for player company services
+	if m.playerCompany != nil {
+		for _, svc := range m.playerCompany.Services {
+			// Map service type to workload type
+			wtype := benchmark.WorkloadCPU
+			if svc.Criticality == "compute" {
+				wtype = benchmark.WorkloadMemory
+			} else if svc.Criticality == "network" || svc.Criticality == "latency-critical" {
+				wtype = benchmark.WorkloadNetwork
+			}
+			// Add workers based on pod count
+			for i := 0; i < svc.PodsPerReplica; i++ {
+				m.benchmarkRunner.AddWorker(m.playerCompany.ID, svc.ID, wtype)
+			}
+		}
+	}
+
+	// Create workers for each enemy company
+	for _, enemy := range m.enemyCompanies {
+		for _, svc := range enemy.Services {
+			wtype := benchmark.WorkloadCPU
+			if svc.Criticality == "compute" {
+				wtype = benchmark.WorkloadMemory
+			} else if svc.Criticality == "network" || svc.Criticality == "latency-critical" {
+				wtype = benchmark.WorkloadNetwork
+			}
+			for i := 0; i < svc.PodsPerReplica; i++ {
+				m.benchmarkRunner.AddWorker(enemy.ID, svc.ID, wtype)
+			}
+		}
+	}
+
+	m.addBattleLog(fmt.Sprintf("Benchmark started with %d workers", m.benchmarkRunner.GetWorkerCount()))
+}
+
+// stopBenchmarkWorkers stops all benchmark workers
+func (m *AppModel) stopBenchmarkWorkers() {
+	if m.benchmarkRunner != nil {
+		m.benchmarkRunner.Stop()
+		m.benchmarkRunner = nil
+	}
+	m.benchmarkMode = false
+}
+
+// renderBenchmarkMetrics renders the benchmark metrics panel
+func (m AppModel) renderBenchmarkMetrics() string {
+	if !m.benchmarkMode || m.benchmarkMetrics == nil {
+		return ""
+	}
+
+	metrics := m.benchmarkMetrics
+
+	// Build metrics display
+	var s string
+	s += m.styles.Subtitle.Render("BENCHMARK METRICS") + "\n\n"
+
+	// Performance section
+	s += m.styles.Title.Render("Performance") + "\n"
+	s += fmt.Sprintf("  Ops/sec:     %s\n", benchmark.FormatOps(metrics.OpsPerSec))
+	s += fmt.Sprintf("  Throughput:  %s\n", benchmark.FormatBytes(metrics.BytesPerSec))
+	s += fmt.Sprintf("  Workers:     %d\n", metrics.WorkerCount)
+	s += fmt.Sprintf("  Duration:    %s\n", metrics.Duration.Round(time.Second))
+	s += "\n"
+
+	// Latency section
+	s += m.styles.Title.Render("Latency") + "\n"
+	s += fmt.Sprintf("  P50:  %s\n", benchmark.FormatLatency(metrics.LatencyP50))
+	s += fmt.Sprintf("  P95:  %s\n", benchmark.FormatLatency(metrics.LatencyP95))
+	s += fmt.Sprintf("  P99:  %s\n", benchmark.FormatLatency(metrics.LatencyP99))
+	s += fmt.Sprintf("  Max:  %s\n", benchmark.FormatLatency(metrics.LatencyMax))
+	s += "\n"
+
+	// Hardware section
+	s += m.styles.Title.Render("Hardware") + "\n"
+	cpuBar := renderBar(int(metrics.CPUPercent), 100, 10)
+	memBar := renderBar(int(metrics.MemUsedMB), 1024, 10)
+	s += fmt.Sprintf("  CPU:  %s %d%%\n", cpuBar, metrics.CPUPercent)
+	s += fmt.Sprintf("  RAM:  %s %dMB\n", memBar, metrics.MemUsedMB)
+	if metrics.GPUPercent > 0 {
+		gpuBar := renderBar(int(metrics.GPUPercent), 100, 10)
+		s += fmt.Sprintf("  GPU:  %s %d%%\n", gpuBar, metrics.GPUPercent)
+		s += fmt.Sprintf("  VRAM: %dMB\n", metrics.VRAMUsedMB)
+	}
+	s += "\n"
+
+	// Game metrics section
+	s += m.styles.Title.Render("Game") + "\n"
+	s += fmt.Sprintf("  FPS:          %d\n", metrics.GameFPS)
+	s += fmt.Sprintf("  Board Upd:    %d\n", metrics.BoardUpdates)
+	s += fmt.Sprintf("  AI Decisions: %d\n", metrics.AIDecisions)
+	s += "\n"
+
+	// Score
+	scoreStyle := m.styles.Success
+	if metrics.Score < 10000 {
+		scoreStyle = m.styles.Warning
+	}
+	s += fmt.Sprintf("SCORE: %s\n", scoreStyle.Render(fmt.Sprintf("%d", metrics.Score)))
+
+	return m.styles.Box.Render(s)
+}
+
+// renderBar renders a simple progress bar
+func renderBar(value, max, width int) string {
+	if max <= 0 {
+		max = 1
+	}
+	filled := (value * width) / max
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	bar := ""
+	for i := 0; i < width; i++ {
+		if i < filled {
+			bar += "#"
+		} else {
+			bar += "-"
+		}
+	}
+	return "[" + bar + "]"
 }

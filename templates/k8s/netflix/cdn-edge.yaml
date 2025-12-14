@@ -7,6 +7,7 @@ metadata:
     company: netflix
     service: cdn-edge
     tier: edge
+    workload-type: cpu-network
 spec:
   replicas: 3
   selector:
@@ -20,64 +21,98 @@ spec:
         company: netflix
         service: cdn-edge
         tier: edge
+        workload-type: cpu-network
     spec:
       containers:
+      # Main CDN service - nginx serving cached content
       - name: nginx
-        image: nginx:alpine
+        image: nginx:1.25-alpine
         ports:
         - containerPort: 80
           name: http
         resources:
           requests:
-            cpu: "250m"
-            memory: "256Mi"
+            cpu: "100m"
+            memory: "64Mi"
           limits:
             cpu: "500m"
-            memory: "512Mi"
+            memory: "256Mi"
         livenessProbe:
           httpGet:
-            path: /health
+            path: /
             port: 80
           initialDelaySeconds: 5
           periodSeconds: 10
         readinessProbe:
           httpGet:
-            path: /health
+            path: /
             port: 80
           initialDelaySeconds: 3
           periodSeconds: 5
         volumeMounts:
-        - name: nginx-config
-          mountPath: /etc/nginx/conf.d
-      - name: traffic-generator
-        image: curlimages/curl:latest
+        - name: content
+          mountPath: /usr/share/nginx/html
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Benchmark sidecar - CPU stress for realistic load
+      - name: stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "matrixprod"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "32Mi"
+          limits:
+            cpu: "500m"
+            memory: "128Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Traffic generator for network I/O benchmark
+      - name: traffic-gen
+        image: curlimages/curl:8.5.0
         command:
         - sh
         - -c
         - |
           while true; do
-            curl -s http://netflix-origin-api:8080/api/content || true
-            curl -s http://netflix-playback:8080/stream || true
-            sleep 0.5
+            curl -s http://localhost:80/ > /dev/null 2>&1 || true
+            curl -s http://netflix-origin-api:8080/api/content > /dev/null 2>&1 || true
+            sleep 0.1
           done
         resources:
           requests:
-            cpu: "50m"
-            memory: "32Mi"
+            cpu: "25m"
+            memory: "16Mi"
           limits:
             cpu: "100m"
-            memory: "64Mi"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+
       volumes:
-      - name: nginx-config
-        configMap:
-          name: netflix-cdn-config
-          optional: true
+      - name: content
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: netflix-cdn-edge
   labels:
+    app: clustership
     company: netflix
     service: cdn-edge
 spec:
