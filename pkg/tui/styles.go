@@ -68,6 +68,9 @@ type Styles struct {
 
 	// panels
 	Box lipgloss.Style
+
+	// overlays
+	InfoBox lipgloss.Style
 }
 
 // DefaultStyles returns the default style configuration
@@ -177,6 +180,13 @@ func DefaultStyles() *Styles {
 			BorderForeground(colorSecondary).
 			Padding(1).
 			MarginTop(1),
+
+		InfoBox: lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(colorSecondary).
+			Padding(1, 2).
+			Width(64).
+			Background(lipgloss.Color("235")),
 	}
 }
 

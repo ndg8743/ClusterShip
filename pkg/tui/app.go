@@ -7,6 +7,8 @@ import (
 	"clustership/pkg/k8s"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -67,7 +69,8 @@ const (
 	StateEnemySelect      // select which enemy companies
 	StatePlacement
 	StateBattle
-	StatePodView // view pod details for selected service
+	StatePodView  // view pod details for selected service
+	StateTutorial // tutorial walkthrough
 	StateGameOver
 	// settings states
 	StateSettings       // main settings menu
@@ -179,6 +182,16 @@ type AppModel struct {
 	benchmarkRunner  *benchmark.Runner          // manages benchmark workers
 	benchmarkMetrics *benchmark.MetricsSnapshot // cached metrics for display
 	benchmarkMode    bool                       // true when running as benchmark
+
+	// Info overlay and tutorial
+	showInfoOverlay bool // toggle info overlay with "i" key
+	tutorialStep    int  // current tutorial step (0 = not in tutorial)
+
+	// K8s settings and health
+	k8sSettingsCursor   int  // cursor for K8s settings menu (0=toggle, 1=namespace, 2=kubeconfig)
+	k8sClusterConnected bool // cached cluster connection status
+	k8sPodCount         int  // total pods in namespace
+	k8sHealthyPods      int  // healthy (running+ready) pods
 }
 
 // NewAppModel creates a fresh game instance
@@ -192,7 +205,7 @@ func NewAppModel() AppModel {
 	return AppModel{
 		state:         StateMenu,
 		styles:        DefaultStyles(),
-		menuItems:     []string{"New Game", "Demo", "Settings", "Quit"},
+		menuItems:     []string{"New Game", "Demo", "Tutorial", "Settings", "Quit"},
 		settingsItems: []string{"Board", "Ships", "Pods", "Bots", "Timing", "Kubernetes", "Save & Back"},
 		companies:     game.ListCompanies(),
 		cfg:           cfg,
@@ -323,6 +336,35 @@ func (m *AppModel) pollK8sEvents() {
 			}
 		default:
 			return
+		}
+	}
+}
+
+// checkK8sHealth updates cluster health metrics
+func (m *AppModel) checkK8sHealth() {
+	if m.k8sClient == nil {
+		m.k8sClusterConnected = false
+		m.k8sPodCount = 0
+		m.k8sHealthyPods = 0
+		return
+	}
+
+	// Check cluster connectivity
+	m.k8sClusterConnected = m.k8sClient.IsClusterAvailable()
+
+	if m.k8sClusterConnected && m.cfg.K8sNamespace != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		pods, err := m.k8sClient.GetPodStatus(ctx, m.cfg.K8sNamespace, "app=clustership")
+		if err == nil {
+			m.k8sPodCount = len(pods)
+			m.k8sHealthyPods = 0
+			for _, p := range pods {
+				if p.Status == k8s.PodRunning && p.Ready {
+					m.k8sHealthyPods++
+				}
+			}
 		}
 	}
 }
@@ -497,9 +539,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// adjust viewport to fit terminal
-		m.viewW = min(40, msg.Width/3)
-		m.viewH = min(25, msg.Height-12)
+		// Scale viewport based on terminal size and board size
+		// Reserve space for UI: ~60 chars for side panel, ~12 lines for header/footer
+		availableW := msg.Width - 60
+		availableH := msg.Height - 12
+		if availableW < 20 {
+			availableW = 20
+		}
+		if availableH < 10 {
+			availableH = 10
+		}
+		// Each cell takes 2 chars (symbol + space)
+		m.viewW = min(availableW/2, 50)
+		m.viewH = min(availableH, 30)
+		// If board exists, cap to board size
+		if m.board != nil {
+			m.viewW = min(m.viewW, m.board.Width)
+			m.viewH = min(m.viewH, m.board.Height)
+		}
+		// Ensure cursor stays in view after resize
+		m.ensureCursorInView()
 		return m, nil
 
 	case tickMsg:
@@ -508,6 +567,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case k8sPollMsg:
 		// Poll K8s events during battle
 		m.pollK8sEvents()
+		// Update health metrics
+		m.checkK8sHealth()
 		// Continue polling if in battle and K8s is enabled
 		if m.state == StateBattle && m.cfg.EnableRealK8s && m.k8sWatcher != nil {
 			return m, doK8sPoll()
@@ -535,7 +596,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
+		case "i", "?":
+			// Toggle info overlay (not during tutorial)
+			if m.state != StateTutorial {
+				m.showInfoOverlay = !m.showInfoOverlay
+				return m, nil
+			}
+		case "esc":
+			// Close info overlay first, then handle state
+			if m.showInfoOverlay {
+				m.showInfoOverlay = false
+				return m, nil
+			}
 		case "q":
+			// Close info overlay first
+			if m.showInfoOverlay {
+				m.showInfoOverlay = false
+				return m, nil
+			}
 			if m.state == StateMenu {
 				return m, tea.Quit
 			}
@@ -546,6 +624,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// q goes back to menu in other states
 			m.state = StateMenu
+			return m, nil
+		}
+
+		// If info overlay is showing, don't process other keys
+		if m.showInfoOverlay {
 			return m, nil
 		}
 
@@ -565,6 +648,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateBattle(msg)
 		case StatePodView:
 			return m.updatePodView(msg)
+		case StateTutorial:
+			return m.updateTutorial(msg)
 		case StateGameOver:
 			return m.updateGameOver(msg)
 		case StateSettings:
@@ -608,10 +693,13 @@ func (m AppModel) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.demoMode = true
 			m.state = StateCompanySelect
 			m.companyCursor = 0
-		case 2: // Settings
+		case 2: // Tutorial
+			m.state = StateTutorial
+			m.tutorialStep = 0
+		case 3: // Settings
 			m.state = StateSettings
 			m.settingsCursor = 0
-		case 3: // Quit
+		case 4: // Quit
 			return m, tea.Quit
 		}
 	}
@@ -945,6 +1033,7 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			if m.cursor[1] > 0 {
 				m.cursor[1]--
+				m.ensureCursorInView()
 			}
 		}
 	case "down", "j":
@@ -958,18 +1047,21 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			if m.board != nil && m.cursor[1] < m.board.Height-1 {
 				m.cursor[1]++
+				m.ensureCursorInView()
 			}
 		}
 	case "left", "h":
 		if m.viewLevel == ViewMap {
 			if m.cursor[0] > 0 {
 				m.cursor[0]--
+				m.ensureCursorInView()
 			}
 		}
 	case "right", "l":
 		if m.viewLevel == ViewMap {
 			if m.board != nil && m.cursor[0] < m.board.Width-1 {
 				m.cursor[0]++
+				m.ensureCursorInView()
 			}
 		}
 	// viewport panning with WASD
@@ -1203,9 +1295,50 @@ func (m AppModel) updateSettingsTiming(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateSettingsK8s handles kubernetes config
 func (m AppModel) updateSettingsK8s(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "up", "k", "down", "j", " ":
-		m.cfg.EnableRealK8s = !m.cfg.EnableRealK8s
-	case "esc", "enter":
+	case "up", "k":
+		if m.k8sSettingsCursor > 0 {
+			m.k8sSettingsCursor--
+		}
+	case "down", "j":
+		if m.k8sSettingsCursor < 2 {
+			m.k8sSettingsCursor++
+		}
+	case " ", "enter":
+		switch m.k8sSettingsCursor {
+		case 0: // Toggle EnableRealK8s
+			m.cfg.EnableRealK8s = !m.cfg.EnableRealK8s
+		case 1: // Cycle namespace
+			namespaces := []string{"clustership", "default", "clustership-dev", "clustership-test"}
+			found := false
+			for i, ns := range namespaces {
+				if m.cfg.K8sNamespace == ns {
+					m.cfg.K8sNamespace = namespaces[(i+1)%len(namespaces)]
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.cfg.K8sNamespace = namespaces[0]
+			}
+		case 2: // Cycle kubeconfig
+			home, _ := os.UserHomeDir()
+			paths := []string{
+				filepath.Join(home, ".kube", "config"),
+				filepath.Join(home, ".kube", "kind-config"),
+			}
+			found := false
+			for i, p := range paths {
+				if m.cfg.Kubeconfig == p {
+					m.cfg.Kubeconfig = paths[(i+1)%len(paths)]
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.cfg.Kubeconfig = paths[0]
+			}
+		}
+	case "esc":
 		m.state = StateSettings
 	}
 	return m, nil
@@ -1421,39 +1554,51 @@ func (m *AppModel) addBattleLog(msg string) {
 
 // View renders the current state
 func (m AppModel) View() string {
+	var view string
+
 	switch m.state {
 	case StateMenu:
-		return m.renderMenu()
+		view = m.renderMenu()
 	case StateSettings:
-		return m.renderSettings()
+		view = m.renderSettings()
 	case StateSettingsBoard:
-		return m.renderSettingsBoard()
+		view = m.renderSettingsBoard()
 	case StateSettingsShips:
-		return m.renderSettingsShips()
+		view = m.renderSettingsShips()
 	case StateSettingsPods:
-		return m.renderSettingsPods()
+		view = m.renderSettingsPods()
 	case StateSettingsBots:
-		return m.renderSettingsBots()
+		view = m.renderSettingsBots()
 	case StateSettingsTiming:
-		return m.renderSettingsTiming()
+		view = m.renderSettingsTiming()
 	case StateSettingsK8s:
-		return m.renderSettingsK8s()
+		view = m.renderSettingsK8s()
 	case StateCompanySelect:
-		return m.renderCompanySelect()
+		view = m.renderCompanySelect()
 	case StateEnemyCountSelect:
-		return m.renderEnemyCountSelect()
+		view = m.renderEnemyCountSelect()
 	case StateEnemySelect:
-		return m.renderEnemySelect()
+		view = m.renderEnemySelect()
 	case StatePlacement:
-		return m.renderPlacement()
+		view = m.renderPlacement()
 	case StateBattle:
-		return m.renderBattle()
+		view = m.renderBattle()
 	case StatePodView:
-		return m.renderPodView()
+		view = m.renderPodView()
+	case StateTutorial:
+		view = m.renderTutorial()
 	case StateGameOver:
-		return m.renderGameOver()
+		view = m.renderGameOver()
+	default:
+		view = ""
 	}
-	return ""
+
+	// Render info overlay on top if enabled
+	if m.showInfoOverlay {
+		return m.renderInfoOverlay(view)
+	}
+
+	return view
 }
 
 // renderMenu draws the main menu
@@ -1470,7 +1615,7 @@ func (m AppModel) renderMenu() string {
 		}
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] navigate  [enter] select  [q] quit")
+	hint := m.styles.Muted.Render("\n[up/down] navigate  [enter] select  [i] info  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
@@ -1629,22 +1774,47 @@ func (m AppModel) renderSettingsTiming() string {
 func (m AppModel) renderSettingsK8s() string {
 	title := m.styles.Title.Render("KUBERNETES SETTINGS")
 
+	// Build menu items
 	enabled := "OFF"
 	if m.cfg.EnableRealK8s {
 		enabled = "ON"
 	}
 
-	info := fmt.Sprintf("Real K8s deployment: %s\n", enabled)
-	info += fmt.Sprintf("Namespace: %s\n", m.cfg.K8sNamespace)
-	info += fmt.Sprintf("Kubeconfig: %s\n", m.cfg.Kubeconfig)
+	items := []string{
+		fmt.Sprintf("Real K8s:   %s", enabled),
+		fmt.Sprintf("Namespace:  %s", m.cfg.K8sNamespace),
+		fmt.Sprintf("Kubeconfig: %s", m.cfg.Kubeconfig),
+	}
 
-	visual := "\nWhen enabled, game deploys real pods to your cluster.\n"
-	visual += "Requires local k8s (minikube/kind).\n"
+	var content string
+	for i, item := range items {
+		if i == m.k8sSettingsCursor {
+			content += m.styles.MenuItemSelected.Render("> " + item) + "\n"
+		} else {
+			content += m.styles.MenuItem.Render("  " + item) + "\n"
+		}
+	}
 
-	hint := m.styles.Muted.Render("\n[space] toggle  [enter/esc] back")
+	// Cluster status indicator
+	status := "\nCluster Status: "
+	if m.k8sClient != nil && m.k8sClusterConnected {
+		status += m.styles.Success.Render("Connected")
+		if m.k8sPodCount > 0 {
+			status += fmt.Sprintf(" (%d/%d pods healthy)", m.k8sHealthyPods, m.k8sPodCount)
+		}
+	} else if m.cfg.EnableRealK8s {
+		status += m.styles.Warning.Render("Not Connected (will connect on game start)")
+	} else {
+		status += m.styles.Muted.Render("Disabled")
+	}
+
+	visual := "\n\nWhen enabled, game deploys real pods to your cluster.\n"
+	visual += "Attacks delete pods. Requires local k8s (kind/minikube).\n"
+
+	hint := m.styles.Muted.Render("\n[up/down] select  [space/enter] change  [esc] back  [i] info")
 
 	return m.styles.App.Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
+		lipgloss.JoinVertical(lipgloss.Left, title, "", content, status, visual, hint),
 	)
 }
 
@@ -1841,6 +2011,12 @@ func (m AppModel) renderMapView() string {
 		sidebar = lipgloss.JoinVertical(lipgloss.Left, sidebar, "\n", benchPanel)
 	}
 
+	// Add K8s health panel if K8s is enabled
+	if m.cfg.EnableRealK8s {
+		k8sPanel := m.renderK8sHealthPanel()
+		sidebar = lipgloss.JoinVertical(lipgloss.Left, sidebar, "\n", k8sPanel)
+	}
+
 	// combine board and sidebar
 	main := lipgloss.JoinHorizontal(lipgloss.Top, board, "  ", sidebar)
 
@@ -1852,7 +2028,7 @@ func (m AppModel) renderMapView() string {
 
 	// footer with controls
 	footer := m.styles.Footer.Render(
-		"[1-5] view level  [arrows] move  [enter] fire  [c] cycle  [q] quit",
+		"[1-5] view level  [arrows] move  [enter] fire  [c] cycle  [i] info  [q] quit",
 	)
 
 	return m.styles.App.Render(
@@ -1924,7 +2100,7 @@ func (m AppModel) renderShipView() string {
 		}
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select ship  [1-5] change view  [q] quit")
+	hint := m.styles.Muted.Render("\n[up/down] select ship  [1-5] change view  [i] info  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -1990,7 +2166,7 @@ func (m AppModel) renderRackView() string {
 		}
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select rack  [1-5] change view  [q] quit")
+	hint := m.styles.Muted.Render("\n[up/down] select rack  [1-5] change view  [i] info  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -2013,7 +2189,7 @@ func (m AppModel) renderYAMLView() string {
 		content += m.renderServiceYAMLList(enemy, false) + "\n"
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select service  [1-5] change view  [q] quit")
+	hint := m.styles.Muted.Render("\n[up/down] select service  [1-5] change view  [i] info  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -2184,7 +2360,7 @@ func (m AppModel) renderRackLayoutView() string {
 		"LEGEND: [!]=Hard Affinity (critical)  [~]=Spread  [o]=Soft  [-]=None  "+
 			"X=Destroyed  _=Empty") + "\n"
 
-	hint := m.styles.Muted.Render("[1-5] change view  [q] quit")
+	hint := m.styles.Muted.Render("[1-5] change view  [i] info  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, legend, hint),
@@ -2842,16 +3018,76 @@ func (m *AppModel) centerViewportOn(x, y int) {
 		targetY = 0
 	}
 	if m.board != nil {
-		if targetX > m.board.Width-m.viewW {
-			targetX = m.board.Width - m.viewW
+		maxX := m.board.Width - m.viewW
+		maxY := m.board.Height - m.viewH
+		if maxX < 0 {
+			maxX = 0
 		}
-		if targetY > m.board.Height-m.viewH {
-			targetY = m.board.Height - m.viewH
+		if maxY < 0 {
+			maxY = 0
+		}
+		if targetX > maxX {
+			targetX = maxX
+		}
+		if targetY > maxY {
+			targetY = maxY
 		}
 	}
 
 	m.viewport[0] = targetX
 	m.viewport[1] = targetY
+}
+
+// ensureCursorInView adjusts viewport to keep cursor visible with margin
+func (m *AppModel) ensureCursorInView() {
+	if m.board == nil {
+		return
+	}
+
+	margin := 2 // cells of margin before scrolling
+
+	// Check if cursor is outside viewport bounds
+	cursorX, cursorY := m.cursor[0], m.cursor[1]
+
+	// Scroll left if cursor is near left edge
+	if cursorX < m.viewport[0]+margin {
+		m.viewport[0] = cursorX - margin
+		if m.viewport[0] < 0 {
+			m.viewport[0] = 0
+		}
+	}
+
+	// Scroll right if cursor is near right edge
+	if cursorX >= m.viewport[0]+m.viewW-margin {
+		m.viewport[0] = cursorX - m.viewW + margin + 1
+		maxX := m.board.Width - m.viewW
+		if maxX < 0 {
+			maxX = 0
+		}
+		if m.viewport[0] > maxX {
+			m.viewport[0] = maxX
+		}
+	}
+
+	// Scroll up if cursor is near top edge
+	if cursorY < m.viewport[1]+margin {
+		m.viewport[1] = cursorY - margin
+		if m.viewport[1] < 0 {
+			m.viewport[1] = 0
+		}
+	}
+
+	// Scroll down if cursor is near bottom edge
+	if cursorY >= m.viewport[1]+m.viewH-margin {
+		m.viewport[1] = cursorY - m.viewH + margin + 1
+		maxY := m.board.Height - m.viewH
+		if maxY < 0 {
+			maxY = 0
+		}
+		if m.viewport[1] > maxY {
+			m.viewport[1] = maxY
+		}
+	}
 }
 
 // renderPodView displays detailed pod information for the selected service
@@ -3367,6 +3603,59 @@ func (m AppModel) renderBenchmarkMetrics() string {
 		scoreStyle = m.styles.Warning
 	}
 	s += fmt.Sprintf("SCORE: %s\n", scoreStyle.Render(fmt.Sprintf("%d", metrics.Score)))
+
+	return m.styles.Box.Render(s)
+}
+
+// renderK8sHealthPanel renders the K8s cluster health panel
+func (m AppModel) renderK8sHealthPanel() string {
+	var s string
+	s += m.styles.Subtitle.Render("K8S CLUSTER") + "\n\n"
+
+	// Connection status
+	if m.k8sClusterConnected {
+		s += m.styles.Success.Render("Status: Connected") + "\n"
+		s += fmt.Sprintf("Namespace: %s\n", m.cfg.K8sNamespace)
+
+		// Pod health
+		if m.k8sPodCount > 0 {
+			healthPct := (m.k8sHealthyPods * 100) / m.k8sPodCount
+			healthBar := renderBar(m.k8sHealthyPods, m.k8sPodCount, 10)
+			healthStyle := m.styles.Success
+			if healthPct < 80 {
+				healthStyle = m.styles.Warning
+			}
+			if healthPct < 50 {
+				healthStyle = m.styles.Error
+			}
+			s += fmt.Sprintf("Pods: %s %s\n", healthBar, healthStyle.Render(fmt.Sprintf("%d/%d", m.k8sHealthyPods, m.k8sPodCount)))
+		} else {
+			s += m.styles.Muted.Render("Pods: 0 (deploying...)") + "\n"
+		}
+
+		// Show recent K8s events
+		if len(m.k8sPodEvents) > 0 {
+			s += "\n" + m.styles.Muted.Render("Recent Events:") + "\n"
+			start := len(m.k8sPodEvents) - 3
+			if start < 0 {
+				start = 0
+			}
+			for _, ev := range m.k8sPodEvents[start:] {
+				evStyle := m.styles.Normal
+				if ev.Type == "Deleted" {
+					evStyle = m.styles.Error
+				} else if ev.Type == "Added" {
+					evStyle = m.styles.Success
+				}
+				s += evStyle.Render(fmt.Sprintf("  %s %s", ev.Type, ev.Pod.Name)) + "\n"
+			}
+		}
+	} else {
+		s += m.styles.Error.Render("Status: Disconnected") + "\n"
+		if m.k8sError != nil {
+			s += m.styles.Muted.Render(fmt.Sprintf("Error: %v", m.k8sError)) + "\n"
+		}
+	}
 
 	return m.styles.Box.Render(s)
 }

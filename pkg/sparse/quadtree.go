@@ -89,21 +89,25 @@ func (qt *QuadTree) Insert(x, y int64, ownerID, rackID string) bool {
 		WasHit:  false,
 	}
 
-	if qt.insertIntoNode(qt.Root, cell, 0) {
-		qt.CellCount++
+	isNew, ok := qt.insertIntoNode(qt.Root, cell, 0)
+	if ok {
+		if isNew {
+			qt.CellCount++
+		}
 		return true
 	}
 	return false
 }
 
 // insertIntoNode recursively inserts a cell into the appropriate node
-func (qt *QuadTree) insertIntoNode(node *QuadNode, cell *Cell, depth int) bool {
+// Returns (isNew, success) - isNew indicates if a new cell was added vs updating existing
+func (qt *QuadTree) insertIntoNode(node *QuadNode, cell *Cell, depth int) (bool, bool) {
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
 	point := Point{X: cell.X, Y: cell.Y}
 	if !node.Bounds.Contains(point) {
-		return false
+		return false, false
 	}
 
 	if node.IsLeaf {
@@ -112,14 +116,14 @@ func (qt *QuadTree) insertIntoNode(node *QuadNode, cell *Cell, depth int) bool {
 			if existing.X == cell.X && existing.Y == cell.Y {
 				// Update existing cell
 				node.Cells[i] = cell
-				return true
+				return false, true // not new, but success
 			}
 		}
 
 		// Add cell if under capacity or at max depth
 		if len(node.Cells) < qt.MaxCells || depth >= qt.MaxDepth {
 			node.Cells = append(node.Cells, cell)
-			return true
+			return true, true // new cell added
 		}
 
 		// Subdivide and redistribute
@@ -130,13 +134,13 @@ func (qt *QuadTree) insertIntoNode(node *QuadNode, cell *Cell, depth int) bool {
 	for _, child := range node.Children {
 		if child != nil && child.Bounds.Contains(point) {
 			node.mu.Unlock()
-			result := qt.insertIntoNode(child, cell, depth+1)
+			isNew, ok := qt.insertIntoNode(child, cell, depth+1)
 			node.mu.Lock()
-			return result
+			return isNew, ok
 		}
 	}
 
-	return false
+	return false, false
 }
 
 // subdivide splits a leaf node into four children

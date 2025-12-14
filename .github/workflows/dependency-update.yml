@@ -1,0 +1,76 @@
+name: Dependency Update
+
+on:
+  schedule:
+    # Run weekly on Monday at 9:00 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-dependencies:
+    name: Update Go Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Update dependencies
+        id: update
+        run: |
+          echo "Updating Go dependencies..."
+          go get -u ./...
+          go mod tidy
+
+          # Check if there are changes
+          if git diff --quiet go.mod go.sum; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No dependency updates available"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Dependencies updated"
+          fi
+
+      - name: Run tests
+        if: steps.update.outputs.has_changes == 'true'
+        run: go test -race ./...
+
+      - name: Create Pull Request
+        if: steps.update.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(deps): update Go dependencies'
+          title: 'chore(deps): Update Go dependencies'
+          body: |
+            ## Automated Dependency Update
+
+            This PR updates Go dependencies to their latest versions.
+
+            ### Changes
+            - Updated all Go module dependencies
+            - Ran `go mod tidy` to clean up
+
+            ### Testing
+            - All unit tests pass with updated dependencies
+
+            Please review the changes and ensure compatibility.
+
+            ---
+            *This PR was created automatically by the dependency update workflow*
+          branch: deps/go-dependencies-update
+          delete-branch: true
+          labels: |
+            dependencies
+            automated

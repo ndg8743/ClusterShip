@@ -1,0 +1,57 @@
+# Kind cluster configuration for ClusterShip integration testing
+# This configuration creates a minimal cluster suitable for CI/CD testing
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+# Cluster name
+name: clustership
+
+# Networking configuration
+networking:
+  # Use default CNI
+  disableDefaultCNI: false
+  # Pod subnet
+  podSubnet: "10.244.0.0/16"
+  # Service subnet
+  serviceSubnet: "10.96.0.0/12"
+  # API server address (localhost)
+  apiServerAddress: "127.0.0.1"
+  # API server port (random)
+  apiServerPort: 0
+
+# Nodes configuration
+nodes:
+  # Single control plane node for testing
+  - role: control-plane
+    # Enable ingress on control plane for testing
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # Expose port 80 for ingress
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      # Expose port 443 for ingress
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+
+  # Optional: Add worker nodes for more realistic testing
+  # - role: worker
+  # - role: worker
+
+# Feature gates
+featureGates:
+  # Enable common feature gates for testing
+  EphemeralContainers: true
+
+# Runtime configuration
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+      endpoint = ["http://localhost:5000"]

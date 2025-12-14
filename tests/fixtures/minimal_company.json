@@ -1,0 +1,19 @@
+{
+  "id": "minimal",
+  "name": "Minimal Corp",
+  "regions": [
+    {
+      "id": "region-1",
+      "name": "Single Region",
+      "racks": 1
+    }
+  ],
+  "services": [
+    {
+      "id": "service-1",
+      "name": "Single Service",
+      "replicas": 1,
+      "pods_per_replica": 1
+    }
+  ]
+}

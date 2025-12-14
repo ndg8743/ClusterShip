@@ -1,0 +1,90 @@
+{
+  "id": "netflix",
+  "name": "Netflix",
+  "emoji": "N",
+  "description": "Streaming video infrastructure with global CDN",
+  "ai_strategy": "hunter",
+  "difficulty": "medium",
+  "regions": [
+    {
+      "id": "us-east-1",
+      "name": "US East (Virginia)",
+      "emoji": "E",
+      "racks": 3,
+      "latency_ms": 10
+    },
+    {
+      "id": "us-west-2",
+      "name": "US West (Oregon)",
+      "emoji": "W",
+      "racks": 3,
+      "latency_ms": 15
+    },
+    {
+      "id": "eu-west-1",
+      "name": "EU West (Ireland)",
+      "emoji": "I",
+      "racks": 2,
+      "latency_ms": 80
+    },
+    {
+      "id": "ap-northeast-1",
+      "name": "Asia Pacific (Tokyo)",
+      "emoji": "T",
+      "racks": 2,
+      "latency_ms": 120
+    }
+  ],
+  "services": [
+    {
+      "id": "playback",
+      "name": "Playback Service",
+      "emoji": "P",
+      "replicas": 3,
+      "pods_per_replica": 2,
+      "affinity": "spread",
+      "criticality": "critical",
+      "can_failover": true
+    },
+    {
+      "id": "cdn-edge",
+      "name": "CDN Edge Cache",
+      "emoji": "C",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "encoding",
+      "name": "Video Encoding",
+      "emoji": "E",
+      "replicas": 2,
+      "pods_per_replica": 3,
+      "affinity": "none",
+      "criticality": "medium",
+      "can_failover": true
+    },
+    {
+      "id": "database",
+      "name": "User Database",
+      "emoji": "D",
+      "replicas": 1,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "origin-api",
+      "name": "Origin API",
+      "emoji": "A",
+      "replicas": 2,
+      "pods_per_replica": 2,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    }
+  ]
+}

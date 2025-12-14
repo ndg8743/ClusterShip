@@ -1,0 +1,67 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github
+.gitlab-ci.yml
+Jenkinsfile
+.travis.yml
+.circleci
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Build artifacts
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test coverage
+coverage/
+*.cover
+*.coverprofile
+
+# Go specific
+vendor/
+
+# Configuration
+.env
+.env.local
+*.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Logs
+*.log
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Claude files
+.claude/
+.mcp.json
+
+# Local build files
+clustership
+clustership.exe

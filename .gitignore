@@ -18,6 +18,8 @@ bin/
 build/
 dist/
 out/
+clustership
+clustership-*
 
 # Vendor directory
 vendor/
@@ -30,5 +32,8 @@ vendor/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local MCP configuration
+.mcp.json
 
 

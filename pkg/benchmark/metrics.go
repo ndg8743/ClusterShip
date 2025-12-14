@@ -140,6 +140,13 @@ func (m *Metrics) GetCompanyOps(companyID string) int64 {
 	return m.CompanyOps[companyID]
 }
 
+// SetCompanyOps sets the ops count for a company
+func (m *Metrics) SetCompanyOps(companyID string, ops int64) {
+	m.companyOpsMu.Lock()
+	defer m.companyOpsMu.Unlock()
+	m.CompanyOps[companyID] = ops
+}
+
 // UpdateMemoryStats updates memory usage from runtime
 func (m *Metrics) UpdateMemoryStats() {
 	var memStats runtime.MemStats
@@ -244,7 +251,12 @@ func formatFloat(f float64) string {
 	if f >= 100 {
 		return formatInt(int64(f))
 	}
-	return string(rune(int(f)))[:1] + "." + string(rune(int(f*10)%10+'0'))
+	intPart := int(f)
+	decPart := int(f*10) % 10
+	if decPart == 0 {
+		return formatInt(int64(intPart))
+	}
+	return formatInt(int64(intPart)) + "." + string(rune(decPart+'0'))
 }
 
 func formatInt(i int64) string {

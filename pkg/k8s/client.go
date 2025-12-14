@@ -17,7 +17,7 @@ import (
 
 // Client wraps the k8s clientset
 type Client struct {
-	clientset *kubernetes.Clientset
+	clientset kubernetes.Interface
 	config    *rest.Config
 	namespace string
 }
@@ -91,7 +91,7 @@ func (c *Client) GetNamespace() string {
 }
 
 // Clientset returns the underlying k8s clientset for advanced ops
-func (c *Client) Clientset() *kubernetes.Clientset {
+func (c *Client) Clientset() kubernetes.Interface {
 	return c.clientset
 }
 

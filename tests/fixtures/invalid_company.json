@@ -1,0 +1,20 @@
+{
+  "id": "broken",
+  "name": "Broken Company"
+  "description": "This JSON is malformed - missing comma above",
+  "regions": [
+    {
+      "id": "region-1",
+      "name": "Region One",
+      "racks": 2
+    }
+  ],
+  "services": [
+    {
+      "id": "service-1",
+      "name": "Service One",
+      "replicas": 1,
+      "pods_per_replica": 1
+    }
+  ]
+}

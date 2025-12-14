@@ -78,7 +78,7 @@ func LoadManifest(path string) (*ServiceManifest, error) {
 }
 
 func extractContainers(containers []corev1.Container) []ContainerInfo {
-	var result []ContainerInfo
+	result := make([]ContainerInfo, 0, len(containers))
 	for _, c := range containers {
 		info := ContainerInfo{
 			Name:    c.Name,
