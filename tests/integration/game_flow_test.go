@@ -98,7 +98,7 @@ func containsText(view, expected string) bool {
 
 // TestGameFlowMenuToCompanySelect tests navigation from menu to company selection
 func TestGameFlowMenuToCompanySelect(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Start at menu
 	view := getViewOutput(m)
@@ -117,7 +117,7 @@ func TestGameFlowMenuToCompanySelect(t *testing.T) {
 
 // TestGameFlowCompanyToEnemySelect tests company selection flow
 func TestGameFlowCompanyToEnemySelect(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Navigate: Menu -> New Game -> Select Company -> Enemy Count
 	keys := []string{"enter"} // Select "New Game"
@@ -137,7 +137,7 @@ func TestGameFlowCompanyToEnemySelect(t *testing.T) {
 
 // TestGameFlowFullGameToPlacement tests complete flow to placement phase
 func TestGameFlowFullGameToPlacement(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Navigate through: Menu -> New Game -> Select Player -> Select Enemy Count -> Select Enemy -> Placement
 	keys := []string{
@@ -163,7 +163,7 @@ func TestGameFlowDemoMode(t *testing.T) {
 		t.Skip("Skipping demo mode test in short mode")
 	}
 
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Navigate: Menu -> Demo
 	keys := []string{
@@ -206,7 +206,7 @@ func TestGameFlowDemoMode(t *testing.T) {
 
 // TestGameFlowMultiEnemy tests battle royale with multiple enemies
 func TestGameFlowMultiEnemy(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Navigate: Menu -> New Game -> Select Player -> Select 3 enemies
 	keys := []string{
@@ -234,7 +234,7 @@ func TestGameFlowMultiEnemy(t *testing.T) {
 
 // TestGameFlowViewLevelSwitching tests switching between view levels (1-5 keys)
 func TestGameFlowViewLevelSwitching(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Get to battle state
 	keys := []string{
@@ -273,7 +273,7 @@ func TestGameFlowViewLevelSwitching(t *testing.T) {
 
 // TestGameFlowQuitToMenu tests quitting from various states back to menu
 func TestGameFlowQuitToMenu(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Get to company selection
 	m = simulateKeys(t, m, []string{"enter"})
@@ -330,7 +330,7 @@ func TestGameFlowSettingsPersistence(t *testing.T) {
 
 // TestGameFlowSettingsUI tests navigating settings menu
 func TestGameFlowSettingsUI(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Navigate: Menu -> Settings
 	keys := []string{
@@ -372,7 +372,7 @@ func TestGameFlowSettingsUI(t *testing.T) {
 
 // TestGameFlowInfoOverlay tests toggling info overlay with 'i' key
 func TestGameFlowInfoOverlay(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Get to battle state
 	keys := []string{
@@ -405,7 +405,7 @@ func TestGameFlowInfoOverlay(t *testing.T) {
 
 // TestGameFlowBattleAttack tests performing an attack in battle
 func TestGameFlowBattleAttack(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Get to battle state
 	keys := []string{
@@ -438,7 +438,7 @@ func TestGameFlowBattleAttack(t *testing.T) {
 
 // TestGameFlowDebugMode tests debug mode toggle with 'd' key
 func TestGameFlowDebugMode(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Get to battle state
 	keys := []string{
@@ -469,7 +469,7 @@ func TestGameFlowCompleteBattle(t *testing.T) {
 		t.Skip("Skipping complete battle test in short mode")
 	}
 
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Setup with minimal configuration for faster game
 	// This would require exposing config or using a test-specific setup
@@ -510,7 +510,7 @@ func TestGameFlowCompleteBattle(t *testing.T) {
 
 // TestGameFlowTutorial tests tutorial mode
 func TestGameFlowTutorial(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Navigate: Menu -> Tutorial
 	keys := []string{
@@ -546,7 +546,7 @@ func TestGameFlowTutorial(t *testing.T) {
 
 // TestGameFlowWindowResize tests handling window resize events
 func TestGameFlowWindowResize(t *testing.T) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Send window resize message
 	resizeMsg := tea.WindowSizeMsg{Width: 120, Height: 40}
@@ -675,13 +675,14 @@ func TestGameFlowConfigValidation(t *testing.T) {
 
 // BenchmarkGameRender benchmarks the View() rendering performance
 func BenchmarkGameRender(b *testing.B) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Get to battle state
 	keys := []string{"enter", "enter", "enter", "enter"}
 	for _, key := range keys {
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		m, _ = m.Update(msg)
+		_ = key // silence unused warning
 	}
 
 	// Benchmark rendering
@@ -693,13 +694,14 @@ func BenchmarkGameRender(b *testing.B) {
 
 // BenchmarkGameUpdate benchmarks the Update() performance
 func BenchmarkGameUpdate(b *testing.B) {
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Get to battle state
 	keys := []string{"enter", "enter", "enter", "enter"}
 	for _, key := range keys {
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		m, _ = m.Update(msg)
+		_ = key // silence unused warning
 	}
 
 	// Benchmark updates with cursor movement
@@ -720,7 +722,7 @@ func TestGameFlowWithRealInput(t *testing.T) {
 	// Create input buffer with key sequence
 	input := bytes.NewBufferString("enter\nenter\nenter\nenter\nq\n")
 
-	m := tui.NewAppModel()
+	var m tea.Model = tui.NewAppModel()
 
 	// Create program with input
 	p := tea.NewProgram(m, tea.WithInput(input))

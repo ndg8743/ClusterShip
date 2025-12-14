@@ -123,69 +123,47 @@ func (c *GameConfig) GetSystemInfo() *hardware.SystemInfo {
 	return c.systemInfo
 }
 
+// clamp restricts a value to [min, max] range
+func clamp(val, min, max int) int {
+	if val < min {
+		return min
+	}
+	if val > max {
+		return max
+	}
+	return val
+}
+
+// clamp64 restricts an int64 value to [min, max] range
+func clamp64(val, min, max int64) int64 {
+	if val < min {
+		return min
+	}
+	if val > max {
+		return max
+	}
+	return val
+}
+
 // Validate ensures config values are within tier-based acceptable ranges
 func (c *GameConfig) Validate() {
-	// Ensure hardware detection is done
 	if c.detectedLimits == nil {
 		c.DetectHardware()
 	}
 	limits := c.detectedLimits
 
 	// Board dimensions
-	if c.BoardWidth < 20 {
-		c.BoardWidth = 20
-	}
-	if c.BoardWidth > limits.MaxBoardWidth {
-		c.BoardWidth = limits.MaxBoardWidth
-	}
-	if c.BoardHeight < 20 {
-		c.BoardHeight = 20
-	}
-	if c.BoardHeight > limits.MaxBoardHeight {
-		c.BoardHeight = limits.MaxBoardHeight
-	}
+	c.BoardWidth = clamp64(c.BoardWidth, 20, limits.MaxBoardWidth)
+	c.BoardHeight = clamp64(c.BoardHeight, 20, limits.MaxBoardHeight)
 
-	// Ships per player
-	if c.ShipsPerPlayer < 1 {
-		c.ShipsPerPlayer = 1
-	}
-	if c.ShipsPerPlayer > limits.MaxShipsTotal {
-		c.ShipsPerPlayer = limits.MaxShipsTotal
-	}
+	// Game settings
+	c.ShipsPerPlayer = clamp(c.ShipsPerPlayer, 1, limits.MaxShipsTotal)
+	c.RacksPerShip = clamp(c.RacksPerShip, 2, limits.MaxRacksPerShip)
+	c.PodsPerRack = clamp(c.PodsPerRack, 1, 100)
+	c.MaxBots = clamp(c.MaxBots, 1, limits.MaxCompanies)
+	c.TurnDelayMs = clamp(c.TurnDelayMs, 10, 5000)
 
-	// Racks per ship
-	if c.RacksPerShip < 2 {
-		c.RacksPerShip = 2
-	}
-	if c.RacksPerShip > limits.MaxRacksPerShip {
-		c.RacksPerShip = limits.MaxRacksPerShip
-	}
-
-	// Pods per rack
-	if c.PodsPerRack < 1 {
-		c.PodsPerRack = 1
-	}
-	if c.PodsPerRack > 100 {
-		c.PodsPerRack = 100
-	}
-
-	// Max bots/companies
-	if c.MaxBots < 1 {
-		c.MaxBots = 1
-	}
-	if c.MaxBots > limits.MaxCompanies {
-		c.MaxBots = limits.MaxCompanies
-	}
-
-	// Timing
-	if c.TurnDelayMs < 10 {
-		c.TurnDelayMs = 10
-	}
-	if c.TurnDelayMs > 5000 {
-		c.TurnDelayMs = 5000
-	}
-
-	// K8s namespace
+	// Defaults
 	if c.K8sNamespace == "" {
 		c.K8sNamespace = "clustership"
 	}

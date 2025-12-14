@@ -143,34 +143,25 @@ func (qt *QuadTree) insertIntoNode(node *QuadNode, cell *Cell, depth int) (bool,
 	return false, false
 }
 
+// newLeafNode creates a new leaf QuadNode with the given bounds
+func newLeafNode(x, y, w, h int64) *QuadNode {
+	return &QuadNode{
+		Bounds: Rect{X: x, Y: y, Width: w, Height: h},
+		Cells:  make([]*Cell, 0),
+		IsLeaf: true,
+	}
+}
+
 // subdivide splits a leaf node into four children
 func (qt *QuadTree) subdivide(node *QuadNode) {
 	b := node.Bounds
-	halfW := b.Width / 2
-	halfH := b.Height / 2
+	halfW, halfH := b.Width/2, b.Height/2
 
 	// Create four children: NW, NE, SW, SE
-	node.Children[0] = &QuadNode{ // NW
-		Bounds: Rect{X: b.X, Y: b.Y, Width: halfW, Height: halfH},
-		Cells:  make([]*Cell, 0),
-		IsLeaf: true,
-	}
-	node.Children[1] = &QuadNode{ // NE
-		Bounds: Rect{X: b.X + halfW, Y: b.Y, Width: b.Width - halfW, Height: halfH},
-		Cells:  make([]*Cell, 0),
-		IsLeaf: true,
-	}
-	node.Children[2] = &QuadNode{ // SW
-		Bounds: Rect{X: b.X, Y: b.Y + halfH, Width: halfW, Height: b.Height - halfH},
-		Cells:  make([]*Cell, 0),
-		IsLeaf: true,
-	}
-	node.Children[3] = &QuadNode{ // SE
-		Bounds: Rect{X: b.X + halfW, Y: b.Y + halfH, Width: b.Width - halfW, Height: b.Height - halfH},
-		Cells:  make([]*Cell, 0),
-		IsLeaf: true,
-	}
-
+	node.Children[0] = newLeafNode(b.X, b.Y, halfW, halfH)
+	node.Children[1] = newLeafNode(b.X+halfW, b.Y, b.Width-halfW, halfH)
+	node.Children[2] = newLeafNode(b.X, b.Y+halfH, halfW, b.Height-halfH)
+	node.Children[3] = newLeafNode(b.X+halfW, b.Y+halfH, b.Width-halfW, b.Height-halfH)
 	node.IsLeaf = false
 
 	// Redistribute existing cells to children
