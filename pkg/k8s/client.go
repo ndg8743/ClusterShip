@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -46,7 +47,7 @@ func NewClient(kubeconfig, namespace string) (*Client, error) {
 	}, nil
 }
 
-// IsClusterAvailable checks if we can talk to the cluster
+// IsClusterAvailable checks if the cluster is accessible
 func (c *Client) IsClusterAvailable() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -55,13 +56,16 @@ func (c *Client) IsClusterAvailable() bool {
 	return err == nil
 }
 
-// EnsureNamespace creates the namespace if it doesnt exist
-func (c *Client) EnsureNamespace(ns string) error {
-	ctx := context.Background()
-
+// EnsureNamespace creates the namespace if it does not exist
+func (c *Client) EnsureNamespace(ctx context.Context, ns string) error {
 	_, err := c.clientset.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
 	if err == nil {
 		return nil // already exists
+	}
+
+	// If error is not "not found", it's an actual error
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check namespace %s: %w", ns, err)
 	}
 
 	namespace := &corev1.Namespace{
@@ -92,9 +96,7 @@ func (c *Client) Clientset() *kubernetes.Clientset {
 }
 
 // CleanupNamespace deletes all clustership resources in the namespace
-func (c *Client) CleanupNamespace(ns string) error {
-	ctx := context.Background()
-
+func (c *Client) CleanupNamespace(ctx context.Context, ns string) error {
 	// delete deployments with our label
 	err := c.clientset.AppsV1().Deployments(ns).DeleteCollection(
 		ctx,
@@ -129,9 +131,7 @@ func (c *Client) CleanupNamespace(ns string) error {
 }
 
 // GetPodStatus returns status of all pods matching label selector
-func (c *Client) GetPodStatus(ns, labelSelector string) ([]PodInfo, error) {
-	ctx := context.Background()
-
+func (c *Client) GetPodStatus(ctx context.Context, ns, labelSelector string) ([]PodInfo, error) {
 	pods, err := c.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})

@@ -6,6 +6,7 @@ metadata:
     app: clustership
     company: netflix
     service: origin-api
+    tier: backend
 spec:
   replicas: 2
   selector:
@@ -15,18 +16,84 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: netflix
         service: origin-api
+        tier: backend
     spec:
       containers:
-      - name: api
-        image: hashicorp/http-echo
-        args:
-        - "-text=Netflix Origin API"
-        - "-listen=:8080"
+      - name: api-server
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import time
+
+          class APIHandler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  # Simulate CPU-intensive work
+                  result = sum(i*i for i in range(1000))
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {'status': 'ok', 'path': self.path, 'compute': result}
+                  self.wfile.write(json.dumps(response).encode())
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), APIHandler)
+          print('Origin API running on port 8080')
+          server.serve_forever()
         ports:
         - containerPort: 8080
+          name: http
         resources:
+          requests:
+            cpu: "300m"
+            memory: "256Mi"
           limits:
-            cpu: "100m"
-            memory: "64Mi"
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+      - name: db-client
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://netflix-database:5432/ || true
+            sleep 1
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "50m"
+            memory: "32Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netflix-origin-api
+  labels:
+    company: netflix
+    service: origin-api
+spec:
+  selector:
+    company: netflix
+    service: origin-api
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

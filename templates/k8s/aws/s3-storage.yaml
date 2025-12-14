@@ -6,6 +6,7 @@ metadata:
     app: clustership
     company: aws
     service: s3-storage
+    tier: storage
 spec:
   replicas: 2
   selector:
@@ -15,21 +16,67 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: aws
         service: s3-storage
+        tier: storage
     spec:
       containers:
       - name: minio
-        image: minio/minio
-        args: ["server", "/data"]
+        image: minio/minio:latest
+        args: ["server", "/data", "--console-address", ":9001"]
         ports:
         - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
         env:
         - name: MINIO_ROOT_USER
           value: "clustership"
         - name: MINIO_ROOT_PASSWORD
           value: "clustership123"
         resources:
+          requests:
+            cpu: "300m"
+            memory: "384Mi"
           limits:
-            cpu: "100m"
-            memory: "128Mi"
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-s3-storage
+  labels:
+    company: aws
+    service: s3-storage
+spec:
+  selector:
+    company: aws
+    service: s3-storage
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: api
+  - port: 9001
+    targetPort: 9001
+    name: console
+  type: ClusterIP

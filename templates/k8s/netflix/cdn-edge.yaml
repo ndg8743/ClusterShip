@@ -6,6 +6,7 @@ metadata:
     app: clustership
     company: netflix
     service: cdn-edge
+    tier: edge
 spec:
   replicas: 3
   selector:
@@ -15,24 +16,76 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: netflix
         service: cdn-edge
+        tier: edge
     spec:
       containers:
       - name: nginx
         image: nginx:alpine
         ports:
         - containerPort: 80
+          name: http
         resources:
-          limits:
-            cpu: "50m"
-            memory: "32Mi"
           requests:
-            cpu: "10m"
-            memory: "16Mi"
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
         livenessProbe:
           httpGet:
-            path: /
+            path: /health
             port: 80
           initialDelaySeconds: 5
           periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+      - name: traffic-generator
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://netflix-origin-api:8080/api/content || true
+            curl -s http://netflix-playback:8080/stream || true
+            sleep 0.5
+          done
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "32Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: netflix-cdn-config
+          optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netflix-cdn-edge
+  labels:
+    company: netflix
+    service: cdn-edge
+spec:
+  selector:
+    company: netflix
+    service: cdn-edge
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  type: ClusterIP

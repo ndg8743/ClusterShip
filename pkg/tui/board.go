@@ -57,7 +57,6 @@ type PlacedRack struct {
 
 // NewBoard creates a game board and places both fleets on the shared ocean (legacy 1v1 mode)
 func NewBoard(width, height int, player, enemy *game.Company) *Board {
-	// Ensure IDs are set
 	if player.ID == "" {
 		player.ID = "player"
 	}
@@ -101,10 +100,8 @@ func NewMultiBoard(width, height int, companies []*game.Company) *Board {
 			}
 		}
 
-		// Initialize pods
 		b.initPods(fleet)
 
-		// Set legacy fields for backward compatibility
 		if i == 0 {
 			b.PlayerFleet = fleet
 		} else if i == 1 {
@@ -115,8 +112,7 @@ func NewMultiBoard(width, height int, companies []*game.Company) *Board {
 	return b
 }
 
-// placeFleet places a company's regions anywhere on the shared ocean
-// occupied map is shared between all fleets to prevent overlaps
+// placeFleet places a company's regions on the shared ocean
 func (b *Board) placeFleet(company *game.Company, occupied map[string]bool) *Fleet {
 	fleet := &Fleet{
 		Company: company,
@@ -129,7 +125,6 @@ func (b *Board) placeFleet(company *game.Company, occupied map[string]bool) *Fle
 			Racks:  make([]*PlacedRack, len(region.Racks)),
 		}
 
-		// place this region (ship) anywhere on the full board
 		cells := b.findPlacement(region.RackCount, 0, b.Width, 0, b.Height, occupied)
 
 		for j, cell := range cells {
@@ -176,13 +171,11 @@ func (b *Board) findPlacement(length, minX, maxX, minY, maxY int, occupied map[s
 				x += i
 			}
 
-			// check bounds
 			if x < minX || x >= maxX || y < minY || y >= maxY {
 				valid = false
 				break
 			}
 
-			// check overlap
 			key := fmt.Sprintf("%d,%d", x, y)
 			if occupied[key] {
 				valid = false
@@ -197,7 +190,6 @@ func (b *Board) findPlacement(length, minX, maxX, minY, maxY int, occupied map[s
 		}
 	}
 
-	// fallback: return partial placement
 	return make([][2]int, length)
 }
 
@@ -212,7 +204,6 @@ func (b *Board) initPods(fleet *Fleet) {
 		svc.Pods = make([]*game.Pod, 0)
 
 		for i := 0; i < svc.Replicas; i++ {
-			// find a rack to place this pod on based on affinity
 			rack := b.findRackForPod(fleet, svc)
 
 			pod := &game.Pod{
@@ -236,9 +227,8 @@ func (b *Board) initPods(fleet *Fleet) {
 	}
 }
 
-// findRackForPod finds a suitable rack based on service affinity
+// findRackForPod finds a suitable rack based on affinity
 func (b *Board) findRackForPod(fleet *Fleet, svc *game.Service) *game.Rack {
-	// collect all available racks
 	var racks []*game.Rack
 	for _, region := range fleet.Company.Regions {
 		for _, rack := range region.Racks {
@@ -254,7 +244,6 @@ func (b *Board) findRackForPod(fleet *Fleet, svc *game.Service) *game.Rack {
 
 	switch svc.Affinity {
 	case game.AffinitySpread:
-		// prefer racks with fewer pods
 		minPods := len(racks[0].Pods)
 		best := racks[0]
 		for _, r := range racks {
@@ -266,7 +255,6 @@ func (b *Board) findRackForPod(fleet *Fleet, svc *game.Service) *game.Rack {
 		return best
 
 	case game.AffinityHard:
-		// must be on specific rack (first available in same region as other pods)
 		if len(svc.Pods) > 0 {
 			for _, r := range racks {
 				if r.RegionID == svc.Pods[0].RegionID {
@@ -274,11 +262,9 @@ func (b *Board) findRackForPod(fleet *Fleet, svc *game.Service) *game.Rack {
 				}
 			}
 		}
-		// fallback to first available
 		return racks[0]
 
 	default:
-		// random placement
 		return racks[rand.Intn(len(racks))]
 	}
 }
@@ -289,7 +275,6 @@ func (b *Board) Attack(x, y int, byPlayer bool) (*ShotResult, []game.GameEvent) 
 	if byPlayer {
 		return b.AttackMulti(x, y, "player", "")
 	}
-	// Find first non-player company for enemy attack
 	for id := range b.Fleets {
 		if id != "player" {
 			return b.AttackMulti(x, y, id, "player")
@@ -298,18 +283,14 @@ func (b *Board) Attack(x, y int, byPlayer bool) (*ShotResult, []game.GameEvent) 
 	return b.AttackMulti(x, y, "enemy", "player")
 }
 
-// AttackMulti executes an attack from one company, hitting any valid target
-// attackerID: the company making the attack
-// targetID: specific target (empty string = attack any valid target at this cell)
+// AttackMulti executes an attack from one company
 func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult, []game.GameEvent) {
 	key := fmt.Sprintf("%d,%d", x, y)
 
-	// Get or create attacker's shot map
 	if b.Shots[attackerID] == nil {
 		b.Shots[attackerID] = make(map[string]*ShotResult)
 	}
 
-	// Already shot here by this attacker?
 	if _, exists := b.Shots[attackerID][key]; exists {
 		return nil, nil
 	}
@@ -319,15 +300,12 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 	}
 	events := make([]game.GameEvent, 0)
 
-	// Find what's at this cell (if anything)
 	ownerID := b.CellOwner[key]
 
-	// Can't attack yourself or empty cell
 	if ownerID == "" || ownerID == attackerID {
 		result.Hit = false
 		result.Message = "Miss"
 		b.Shots[attackerID][key] = result
-		// Also update legacy maps for backward compat
 		if attackerID == "player" {
 			b.PlayerShots[key] = result
 		} else {
@@ -336,7 +314,6 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 		return result, events
 	}
 
-	// If targetID specified, must match owner
 	if targetID != "" && ownerID != targetID {
 		result.Hit = false
 		result.Message = "Miss"
@@ -349,7 +326,6 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 		return result, events
 	}
 
-	// Find the fleet being hit
 	targetFleet := b.Fleets[ownerID]
 	if targetFleet == nil {
 		result.Hit = false
@@ -358,14 +334,12 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 		return result, events
 	}
 
-	// Check if we hit a rack
 	rack := b.findRackAt(targetFleet, x, y)
 	if rack != nil && !rack.IsDestroyed {
 		result.Hit = true
 		result.HitRack = rack
 		rack.HitCount++
 
-		// damage pods on this rack
 		for _, pod := range rack.Pods {
 			if pod.Status == game.PodRunning {
 				pod.Health--
@@ -373,7 +347,6 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 					result.KilledPod = true
 					result.HitPod = pod
 
-					// try to reschedule based on affinity
 					rescheduled := b.tryReschedulePod(targetFleet, pod)
 
 					if rescheduled {
@@ -399,7 +372,6 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 			}
 		}
 
-		// check if rack is destroyed (all pods dead)
 		allDead := true
 		for _, pod := range rack.Pods {
 			if pod.Status == game.PodRunning {
@@ -425,7 +397,6 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 	}
 
 	b.Shots[attackerID][key] = result
-	// Also update legacy maps for backward compat
 	if attackerID == "player" {
 		b.PlayerShots[key] = result
 	} else {
@@ -472,13 +443,11 @@ func (b *Board) tryReschedulePod(fleet *Fleet, pod *game.Pod) bool {
 
 	oldRackID := pod.RackID
 
-	// find a new rack
 	newRack := b.findRackForPod(fleet, svc)
 	if newRack == nil || newRack.ID == oldRackID {
 		return false
 	}
 
-	// remove pod from old rack
 	for _, region := range fleet.Company.Regions {
 		for _, rack := range region.Racks {
 			if rack.ID == oldRackID {
@@ -494,7 +463,6 @@ func (b *Board) tryReschedulePod(fleet *Fleet, pod *game.Pod) bool {
 		}
 	}
 
-	// move pod to new rack
 	pod.RackID = newRack.ID
 	pod.RegionID = newRack.RegionID
 	pod.Position = newRack.Position
@@ -520,7 +488,6 @@ const (
 func (b *Board) GetPlayerCellState(x, y int) CellState {
 	key := fmt.Sprintf("%d,%d", x, y)
 
-	// check if enemy shot here
 	if result, ok := b.EnemyShots[key]; ok {
 		if result.Hit {
 			if result.KilledRack {
@@ -531,7 +498,6 @@ func (b *Board) GetPlayerCellState(x, y int) CellState {
 		return CellMiss
 	}
 
-	// check if we have a ship here
 	if b.findRackAt(b.PlayerFleet, x, y) != nil {
 		return CellShip
 	}
@@ -544,7 +510,6 @@ func (b *Board) GetPlayerCellState(x, y int) CellState {
 func (b *Board) GetEnemyCellState(x, y int) CellState {
 	key := fmt.Sprintf("%d,%d", x, y)
 
-	// check if player shot here
 	if result, ok := b.PlayerShots[key]; ok {
 		if result.Hit {
 			if result.KilledRack {
@@ -555,7 +520,6 @@ func (b *Board) GetEnemyCellState(x, y int) CellState {
 		return CellMiss
 	}
 
-	// unexplored
 	return CellWater
 }
 
@@ -602,6 +566,118 @@ func (b *Board) GetCellOwner(x, y int) string {
 func (b *Board) HasShipAt(x, y int) bool {
 	key := fmt.Sprintf("%d,%d", x, y)
 	return b.CellOwner[key] != ""
+}
+
+// ServiceOnRack contains info about a service's pods on a specific rack
+type ServiceOnRack struct {
+	ServiceID   string
+	ServiceName string
+	Affinity    game.AffinityType
+	PodCount    int
+	RunningPods int
+	CanFailover bool
+}
+
+// CellInfo contains details about what's at a cell (for hover display)
+type CellInfo struct {
+	Empty          bool
+	OwnerID        string
+	OwnerName      string
+	RegionID       string
+	RegionName     string
+	RackID         string
+	IsDestroyed    bool
+	PodCount       int
+	RunningPods    int
+	ServiceIDs     []string
+	ServicesOnRack []ServiceOnRack // detailed service info
+	WasHit         bool
+	CanAttack      bool // true if not your own and not already hit by you
+	HasCritical    bool // true if rack has hard-affinity (critical) services
+}
+
+// GetCellInfo returns detailed info about what's at (x, y) from the attacker's perspective
+func (b *Board) GetCellInfo(x, y int, attackerID string) CellInfo {
+	key := fmt.Sprintf("%d,%d", x, y)
+	info := CellInfo{Empty: true}
+
+	ownerID := b.CellOwner[key]
+	if ownerID == "" {
+		return info
+	}
+
+	info.Empty = false
+	info.OwnerID = ownerID
+
+	fleet := b.Fleets[ownerID]
+	if fleet == nil || fleet.Company == nil {
+		return info
+	}
+
+	info.OwnerName = fleet.Company.Name
+
+	for _, region := range fleet.Company.Regions {
+		for _, rack := range region.Racks {
+			if rack.Position[0] == x && rack.Position[1] == y {
+				info.RegionID = region.ID
+				info.RegionName = region.Name
+				info.RackID = rack.ID
+				info.IsDestroyed = rack.IsDestroyed
+				info.PodCount = len(rack.Pods)
+
+				svcPods := make(map[string]*ServiceOnRack)
+				for _, pod := range rack.Pods {
+					if pod.Status == game.PodRunning {
+						info.RunningPods++
+					}
+
+					if _, exists := svcPods[pod.ServiceID]; !exists {
+						var svc *game.Service
+						for _, s := range fleet.Company.Services {
+							if s.ID == pod.ServiceID {
+								svc = s
+								break
+							}
+						}
+						if svc != nil {
+							svcPods[pod.ServiceID] = &ServiceOnRack{
+								ServiceID:   svc.ID,
+								ServiceName: svc.Name,
+								Affinity:    svc.Affinity,
+								CanFailover: svc.CanFailover,
+							}
+							if svc.Affinity == game.AffinityHard {
+								info.HasCritical = true
+							}
+						}
+					}
+					if svcPods[pod.ServiceID] != nil {
+						svcPods[pod.ServiceID].PodCount++
+						if pod.Status == game.PodRunning {
+							svcPods[pod.ServiceID].RunningPods++
+						}
+					}
+				}
+
+				for svcID, svcInfo := range svcPods {
+					info.ServiceIDs = append(info.ServiceIDs, svcID)
+					info.ServicesOnRack = append(info.ServicesOnRack, *svcInfo)
+				}
+
+				break
+			}
+		}
+	}
+
+	if b.Shots[attackerID] != nil {
+		if _, hit := b.Shots[attackerID][key]; hit {
+			info.WasHit = true
+		}
+	}
+
+	info.CanAttack = ownerID != attackerID && !info.WasHit
+
+	return info
 }
 
 // GetFleetStats returns stats about a fleet

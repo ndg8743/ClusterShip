@@ -6,8 +6,9 @@ metadata:
     app: clustership
     company: aws
     service: rds-database
+    tier: data
 spec:
-  serviceName: aws-rds
+  serviceName: aws-rds-database
   replicas: 1
   selector:
     matchLabels:
@@ -16,18 +17,79 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: aws
         service: rds-database
+        tier: data
     spec:
       containers:
       - name: mysql
         image: mysql:8
         ports:
         - containerPort: 3306
+          name: mysql
         env:
         - name: MYSQL_ROOT_PASSWORD
           value: "clustership"
+        - name: MYSQL_DATABASE
+          value: "aws"
+        - name: MYSQL_USER
+          value: "aws"
+        - name: MYSQL_PASSWORD
+          value: "clustership"
         resources:
+          requests:
+            cpu: "400m"
+            memory: "384Mi"
           limits:
-            cpu: "100m"
-            memory: "256Mi"
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -h
+            - localhost
+            - -u
+            - root
+            - -pclustership
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - mysql
+            - -h
+            - localhost
+            - -u
+            - root
+            - -pclustership
+            - -e
+            - SELECT 1
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: mysql-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-rds-database
+  labels:
+    company: aws
+    service: rds-database
+spec:
+  selector:
+    company: aws
+    service: rds-database
+  ports:
+  - port: 3306
+    targetPort: 3306
+    name: mysql
+  type: ClusterIP
+  clusterIP: None

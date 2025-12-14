@@ -57,7 +57,6 @@ type Styles struct {
 // DefaultStyles returns the default style configuration
 func DefaultStyles() *Styles {
 	return &Styles{
-		// layout styles
 		App: lipgloss.NewStyle().
 			Padding(1, 2),
 
@@ -89,7 +88,6 @@ func DefaultStyles() *Styles {
 			BorderForeground(colorPrimary).
 			Padding(0, 1),
 
-		// board cell styles - these get applied to individual cells
 		Water: lipgloss.NewStyle().
 			Foreground(colorWater),
 
@@ -112,7 +110,6 @@ func DefaultStyles() *Styles {
 			Foreground(colorDanger).
 			Bold(true),
 
-		// text styles
 		Title: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorPrimary),
@@ -141,7 +138,6 @@ func DefaultStyles() *Styles {
 		Unselected: lipgloss.NewStyle().
 			Foreground(colorMuted),
 
-		// health indicators
 		HealthGood: lipgloss.NewStyle().
 			Foreground(colorSuccess),
 
@@ -151,7 +147,6 @@ func DefaultStyles() *Styles {
 		HealthBad: lipgloss.NewStyle().
 			Foreground(colorDanger),
 
-		// menu items
 		MenuItem: lipgloss.NewStyle().
 			PaddingLeft(2),
 

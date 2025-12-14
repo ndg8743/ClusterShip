@@ -28,7 +28,7 @@ func LoadCompanyTemplate(id string) (*CompanyTemplate, error) {
 	return &template, nil
 }
 
-// ListCompanies returns IDs of all available company templates
+// ListCompanies returns available company template IDs
 func ListCompanies() []string {
 	entries, err := os.ReadDir(TemplatesDir)
 	if err != nil {
@@ -45,8 +45,7 @@ func ListCompanies() []string {
 	return ids
 }
 
-// CompanyFromTemplate creates a Company from a template.
-// This initializes the runtime structures (Racks, Pods) but doesn't place them on the board yet.
+// CompanyFromTemplate creates a Company from a template
 func CompanyFromTemplate(t *CompanyTemplate) *Company {
 	c := &Company{
 		ID:          t.ID,
@@ -59,7 +58,6 @@ func CompanyFromTemplate(t *CompanyTemplate) *Company {
 		Services:    make([]*Service, len(t.Services)),
 	}
 
-	// create regions with their racks
 	for i, rt := range t.Regions {
 		region := &Region{
 			ID:        rt.ID,
@@ -70,7 +68,6 @@ func CompanyFromTemplate(t *CompanyTemplate) *Company {
 			Racks:     make([]*Rack, rt.Racks),
 		}
 
-		// create empty racks for this region
 		for j := 0; j < rt.Racks; j++ {
 			region.Racks[j] = &Rack{
 				ID:       fmt.Sprintf("%s-rack-%d", region.ID, j),
@@ -83,7 +80,6 @@ func CompanyFromTemplate(t *CompanyTemplate) *Company {
 		c.Regions[i] = region
 	}
 
-	// create services (pods get created during placement)
 	for i, st := range t.Services {
 		svc := &Service{
 			ID:             st.ID,
@@ -112,6 +108,58 @@ func (c *Company) TotalRacks() int {
 	return total
 }
 
+// AdjustToConfig modifies company to match game config settings
+func (c *Company) AdjustToConfig(shipsPerPlayer, racksPerShip, podsPerRack int) {
+	// adjust number of regions (ships)
+	if len(c.Regions) > shipsPerPlayer {
+		c.Regions = c.Regions[:shipsPerPlayer]
+	} else {
+		// add more regions if needed
+		for len(c.Regions) < shipsPerPlayer {
+			idx := len(c.Regions)
+			region := &Region{
+				ID:        fmt.Sprintf("region-%d", idx),
+				Name:      fmt.Sprintf("Region %d", idx+1),
+				RackCount: racksPerShip,
+				Racks:     make([]*Rack, racksPerShip),
+			}
+			for j := 0; j < racksPerShip; j++ {
+				region.Racks[j] = &Rack{
+					ID:       fmt.Sprintf("%s-rack-%d", region.ID, j),
+					RegionID: region.ID,
+					Capacity: podsPerRack,
+					Pods:     make([]*Pod, 0),
+				}
+			}
+			c.Regions = append(c.Regions, region)
+		}
+	}
+
+	// adjust racks per region
+	for _, region := range c.Regions {
+		if len(region.Racks) > racksPerShip {
+			region.Racks = region.Racks[:racksPerShip]
+			region.RackCount = racksPerShip
+		} else {
+			for len(region.Racks) < racksPerShip {
+				j := len(region.Racks)
+				region.Racks = append(region.Racks, &Rack{
+					ID:       fmt.Sprintf("%s-rack-%d", region.ID, j),
+					RegionID: region.ID,
+					Capacity: podsPerRack,
+					Pods:     make([]*Pod, 0),
+				})
+			}
+			region.RackCount = racksPerShip
+		}
+
+		// update rack capacity
+		for _, rack := range region.Racks {
+			rack.Capacity = podsPerRack
+		}
+	}
+}
+
 // TotalPods returns the total number of pods across all services.
 func (c *Company) TotalPods() int {
 	total := 0
@@ -121,7 +169,7 @@ func (c *Company) TotalPods() int {
 	return total
 }
 
-// HealthyPodCount returns how many pods are still running
+// HealthyPodCount returns running pod count
 func (c *Company) HealthyPodCount() int {
 	count := 0
 	for _, s := range c.Services {
@@ -134,7 +182,7 @@ func (c *Company) HealthyPodCount() int {
 	return count
 }
 
-// PendingPodCount returns how many pods are pending (can't be scheduled)
+// PendingPodCount returns pending pod count
 func (c *Company) PendingPodCount() int {
 	count := 0
 	for _, s := range c.Services {

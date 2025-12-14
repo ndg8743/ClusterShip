@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  clustership:
+    build: .
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./templates:/app/templates:ro
+      - ~/.kube:/home/clustership/.kube:ro
+    environment:
+      - TERM=xterm-256color
+      - KUBECONFIG=/home/clustership/.kube/config
+
+  clustership-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./templates:/app/templates:ro
+      - ~/.kube:/home/clustership/.kube:ro
+    environment:
+      - TERM=xterm-256color
+    profiles:
+      - dev

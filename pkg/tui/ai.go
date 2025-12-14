@@ -8,12 +8,12 @@ import (
 	"sort"
 )
 
-// AIPlayer handles AI decision making for the enemy
+// AIPlayer handles AI decision-making for the enemy
 type AIPlayer struct {
 	Strategy  game.AIStrategy
 	CompanyID string // which company this AI controls
 
-	// Per-opponent tracking for multi-company battles
+	// Multi-company battle tracking
 	GuessedPerOpponent  map[string]map[string]bool // opponentID -> coordKey -> guessed
 	HitsPerOpponent     map[string][][2]int        // opponentID -> hit coords
 	HitQueuePerOpponent map[string][][2]int        // opponentID -> neighbors to try
@@ -58,7 +58,6 @@ func NewMultiAIPlayer(companyID string, strategy game.AIStrategy, width, height 
 		BoardHeight:         height,
 	}
 
-	// Initialize per-opponent tracking
 	for _, oppID := range opponentIDs {
 		ai.GuessedPerOpponent[oppID] = make(map[string]bool)
 		ai.HitsPerOpponent[oppID] = make([][2]int, 0)
@@ -93,16 +92,13 @@ func (ai *AIPlayer) RecordResult(x, y int, result *ShotResult) {
 		return
 	}
 
-	// hit! record it and queue neighbors
 	ai.Hits = append(ai.Hits, [2]int{x, y})
 	ai.LastHit = &[2]int{x, y}
 
 	if result.KilledRack {
-		// destroyed something - clear the hunt queue, target is dead
 		ai.HitQueue = nil
 		ai.LastHit = nil
 	} else {
-		// hit but not destroyed - queue neighbors for hunting
 		ai.queueNeighbors(x, y)
 	}
 }
@@ -119,16 +115,12 @@ func (ai *AIPlayer) pickRandom() [2]int {
 		}
 	}
 
-	// fallback: linear scan
 	return ai.linearScan()
 }
 
 // pickHunter uses the classic "hunt nearest neighbor" strategy
-// when there's an active hit, target adjacent cells first
 func (ai *AIPlayer) pickHunter() [2]int {
-	// if we have queued neighbors from a hit, try those first
 	for len(ai.HitQueue) > 0 {
-		// pop from front
 		next := ai.HitQueue[0]
 		ai.HitQueue = ai.HitQueue[1:]
 
@@ -142,14 +134,11 @@ func (ai *AIPlayer) pickHunter() [2]int {
 		}
 	}
 
-	// no active hunt - random search
 	return ai.pickRandom()
 }
 
 // pickDefensive focuses on edges and spread-out targeting
-// (tries to find ships without revealing too much)
 func (ai *AIPlayer) pickDefensive() [2]int {
-	// check pattern: every 3rd cell in checkerboard
 	for y := 0; y < ai.BoardHeight; y += 2 {
 		for x := (y/2)%3; x < ai.BoardWidth; x += 3 {
 			key := fmt.Sprintf("%d,%d", x, y)
@@ -158,13 +147,11 @@ func (ai *AIPlayer) pickDefensive() [2]int {
 			}
 		}
 	}
-	// fallback to random
 	return ai.pickRandom()
 }
 
-// pickAggressive targets center of board first (ships often placed there)
+// pickAggressive targets center of board first
 func (ai *AIPlayer) pickAggressive() [2]int {
-	// if we're hunting, stay aggressive
 	if len(ai.HitQueue) > 0 {
 		return ai.pickHunter()
 	}
@@ -192,7 +179,7 @@ func (ai *AIPlayer) pickAggressive() [2]int {
 	return ai.pickRandom()
 }
 
-// queueNeighbors adds the four cardinal neighbors to the hunt queue
+// queueNeighbors adds the four cardinal neighbors to the queue
 func (ai *AIPlayer) queueNeighbors(x, y int) {
 	neighbors := [][2]int{
 		{x, y - 1}, // up
@@ -211,7 +198,6 @@ func (ai *AIPlayer) queueNeighbors(x, y int) {
 			continue
 		}
 
-		// check if already in queue
 		inQueue := false
 		for _, q := range ai.HitQueue {
 			if q[0] == n[0] && q[1] == n[1] {
@@ -258,7 +244,6 @@ func (ai *AIPlayer) PickTargetAgainst(activeOpponents []string) ([2]int, string)
 		return [2]int{0, 0}, ""
 	}
 
-	// Strategy: prioritize opponents with active hunt queues
 	for _, oppID := range activeOpponents {
 		queue := ai.HitQueuePerOpponent[oppID]
 		if len(queue) > 0 {
@@ -305,20 +290,16 @@ func (ai *AIPlayer) pickRandomAgainst(oppID string) [2]int {
 func (ai *AIPlayer) RecordResultAgainst(x, y int, targetID string, result *ShotResult) {
 	key := fmt.Sprintf("%d,%d", x, y)
 
-	// Initialize maps if needed
 	if ai.GuessedPerOpponent[targetID] == nil {
 		ai.GuessedPerOpponent[targetID] = make(map[string]bool)
 	}
 	ai.GuessedPerOpponent[targetID][key] = true
-
-	// Also track globally for strategies that use it
 	ai.Guessed[key] = true
 
 	if result == nil || !result.Hit {
 		return
 	}
 
-	// Hit! Record and queue neighbors
 	if ai.HitsPerOpponent[targetID] == nil {
 		ai.HitsPerOpponent[targetID] = make([][2]int, 0)
 	}
@@ -327,7 +308,6 @@ func (ai *AIPlayer) RecordResultAgainst(x, y int, targetID string, result *ShotR
 	if !result.KilledRack {
 		ai.queueNeighborsAgainst(x, y, targetID)
 	} else {
-		// Clear queue for this opponent if rack destroyed
 		ai.HitQueuePerOpponent[targetID] = nil
 	}
 }
@@ -351,7 +331,6 @@ func (ai *AIPlayer) queueNeighborsAgainst(x, y int, oppID string) {
 		if guessed != nil && guessed[key] {
 			continue
 		}
-		// Add if not already in queue
 		inQueue := false
 		for _, q := range ai.HitQueuePerOpponent[oppID] {
 			if q[0] == n[0] && q[1] == n[1] {
@@ -365,11 +344,8 @@ func (ai *AIPlayer) queueNeighborsAgainst(x, y int, oppID string) {
 	}
 }
 
-// =============================================================================
 // K-Nearest Neighbor (KNN) Targeting Algorithm
-// =============================================================================
-// Uses hit history to predict likely ship locations. Cells closer to clusters
-// of previous hits have higher probability scores.
+// Uses hit history to predict likely ship locations
 
 // cellScore represents a cell with its KNN-based probability score
 type cellScore struct {
@@ -385,7 +361,6 @@ func euclideanDistance(x1, y1, x2, y2 int) float64 {
 }
 
 // pickKNNTarget uses K-Nearest Neighbor algorithm to find the best target
-// K = number of nearest hits to consider for scoring each cell
 func (ai *AIPlayer) pickKNNTarget(oppID string, k int) [2]int {
 	hits := ai.HitsPerOpponent[oppID]
 	guessed := ai.GuessedPerOpponent[oppID]
@@ -394,17 +369,14 @@ func (ai *AIPlayer) pickKNNTarget(oppID string, k int) [2]int {
 		guessed = make(map[string]bool)
 	}
 
-	// If no hits yet, fall back to probability density (center-biased)
 	if len(hits) == 0 {
 		return ai.pickProbabilityDensity(oppID)
 	}
 
-	// Adjust K to available hits
 	if k > len(hits) {
 		k = len(hits)
 	}
 
-	// Score all unguessed cells based on KNN
 	candidates := make([]cellScore, 0)
 
 	for x := 0; x < ai.BoardWidth; x++ {
@@ -414,31 +386,25 @@ func (ai *AIPlayer) pickKNNTarget(oppID string, k int) [2]int {
 				continue
 			}
 
-			// Calculate distances to all hits
 			distances := make([]float64, len(hits))
 			for i, hit := range hits {
 				distances[i] = euclideanDistance(x, y, hit[0], hit[1])
 			}
 
-			// Sort distances and take K nearest
 			sort.Float64s(distances)
 			kNearest := distances[:k]
 
-			// Score = inverse of average distance to K nearest hits
-			// Lower average distance = higher score (closer to hit clusters)
 			avgDist := 0.0
 			for _, d := range kNearest {
 				avgDist += d
 			}
 			avgDist /= float64(k)
 
-			// Avoid division by zero, add small epsilon
 			score := 1.0 / (avgDist + 0.1)
 
-			// Bonus for cells adjacent to hits (hunt priority)
 			for _, hit := range hits {
 				if (abs(x-hit[0]) == 1 && y == hit[1]) || (abs(y-hit[1]) == 1 && x == hit[0]) {
-					score *= 2.0 // Double score for adjacent cells
+					score *= 2.0
 					break
 				}
 			}
@@ -451,13 +417,10 @@ func (ai *AIPlayer) pickKNNTarget(oppID string, k int) [2]int {
 		return ai.linearScan()
 	}
 
-	// Sort by score descending
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
 
-	// Pick from top candidates with some randomness to avoid predictability
-	// Take top 10% or at least 3 candidates
 	topN := len(candidates) / 10
 	if topN < 3 {
 		topN = 3
@@ -466,13 +429,11 @@ func (ai *AIPlayer) pickKNNTarget(oppID string, k int) [2]int {
 		topN = len(candidates)
 	}
 
-	// Weighted random selection from top candidates
 	selected := candidates[rand.Intn(topN)]
 	return [2]int{selected.x, selected.y}
 }
 
 // pickProbabilityDensity targets cells with higher ship probability
-// Uses parity pattern (checkerboard) combined with center bias
 func (ai *AIPlayer) pickProbabilityDensity(oppID string) [2]int {
 	guessed := ai.GuessedPerOpponent[oppID]
 	if guessed == nil {
@@ -490,16 +451,14 @@ func (ai *AIPlayer) pickProbabilityDensity(oppID string) [2]int {
 				continue
 			}
 
-			// Base score from parity (checkerboard pattern finds ships faster)
 			score := 1.0
 			if (x+y)%2 == 0 {
-				score = 1.5 // Prefer checkerboard cells
+				score = 1.5
 			}
 
-			// Center bias - ships often placed away from edges
 			distFromCenter := euclideanDistance(x, y, int(centerX), int(centerY))
 			maxDist := euclideanDistance(0, 0, int(centerX), int(centerY))
-			centerScore := 1.0 - (distFromCenter / maxDist) // 0-1, higher near center
+			centerScore := 1.0 - (distFromCenter / maxDist)
 			score *= (1.0 + centerScore)
 
 			candidates = append(candidates, cellScore{x, y, score})
@@ -510,7 +469,6 @@ func (ai *AIPlayer) pickProbabilityDensity(oppID string) [2]int {
 		return ai.linearScan()
 	}
 
-	// Sort and pick from top candidates
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
@@ -528,13 +486,11 @@ func (ai *AIPlayer) pickProbabilityDensity(oppID string) [2]int {
 }
 
 // PickTargetAgainstKNN uses KNN algorithm for smarter targeting
-// Returns (coord, targetCompanyID)
 func (ai *AIPlayer) PickTargetAgainstKNN(activeOpponents []string, k int) ([2]int, string) {
 	if len(activeOpponents) == 0 {
 		return [2]int{0, 0}, ""
 	}
 
-	// First priority: check hunt queues (adjacent to recent hits)
 	for _, oppID := range activeOpponents {
 		queue := ai.HitQueuePerOpponent[oppID]
 		if len(queue) > 0 {
@@ -549,8 +505,6 @@ func (ai *AIPlayer) PickTargetAgainstKNN(activeOpponents []string, k int) ([2]in
 		}
 	}
 
-	// Second priority: use KNN to find best target across all opponents
-	// Score each opponent by their hit density (more hits = more likely to have remaining ships nearby)
 	type oppScore struct {
 		id    string
 		score float64
@@ -565,7 +519,6 @@ func (ai *AIPlayer) PickTargetAgainstKNN(activeOpponents []string, k int) ([2]in
 			guessedCount = len(guessed)
 		}
 
-		// Score based on hit ratio and remaining cells
 		totalCells := ai.BoardWidth * ai.BoardHeight
 		remainingCells := totalCells - guessedCount
 		hitRatio := float64(len(hits)+1) / float64(guessedCount+1)
@@ -574,12 +527,10 @@ func (ai *AIPlayer) PickTargetAgainstKNN(activeOpponents []string, k int) ([2]in
 		oppScores = append(oppScores, oppScore{oppID, score})
 	}
 
-	// Sort by score and pick weighted random from top opponents
 	sort.Slice(oppScores, func(i, j int) bool {
 		return oppScores[i].score > oppScores[j].score
 	})
 
-	// Weighted selection favoring higher-scored opponents
 	totalScore := 0.0
 	for _, os := range oppScores {
 		totalScore += os.score
@@ -596,7 +547,6 @@ func (ai *AIPlayer) PickTargetAgainstKNN(activeOpponents []string, k int) ([2]in
 		}
 	}
 
-	// Use KNN to pick target for selected opponent
 	coord := ai.pickKNNTarget(selectedOpp, k)
 	return coord, selectedOpp
 }

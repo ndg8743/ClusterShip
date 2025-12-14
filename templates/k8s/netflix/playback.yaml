@@ -6,6 +6,7 @@ metadata:
     app: clustership
     company: netflix
     service: playback
+    tier: streaming
 spec:
   replicas: 2
   selector:
@@ -15,18 +16,76 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: netflix
         service: playback
+        tier: streaming
     spec:
       containers:
-      - name: playback-api
-        image: hashicorp/http-echo
-        args:
-        - "-text=Netflix Playback Service"
-        - "-listen=:8080"
+      - name: playback-server
+        image: node:18-alpine
+        command:
+        - node
+        - -e
+        - |
+          const http = require('http');
+          const server = http.createServer((req, res) => {
+            // Simulate video streaming workload
+            let data = '';
+            for (let i = 0; i < 10000; i++) {
+              data += String.fromCharCode(65 + Math.floor(Math.random() * 26));
+            }
+            res.writeHead(200, {'Content-Type': 'application/octet-stream'});
+            res.end(data);
+          });
+          server.listen(8080, () => console.log('Playback streaming on port 8080'));
         ports:
         - containerPort: 8080
+          name: http
         resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+      - name: cdn-client
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://netflix-cdn-edge/ || true
+            sleep 0.8
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
           limits:
             cpu: "50m"
             memory: "32Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netflix-playback
+  labels:
+    company: netflix
+    service: playback
+spec:
+  selector:
+    company: netflix
+    service: playback
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

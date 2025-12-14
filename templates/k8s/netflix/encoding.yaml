@@ -6,6 +6,7 @@ metadata:
     app: clustership
     company: netflix
     service: encoding
+    tier: worker
 spec:
   replicas: 3
   selector:
@@ -15,14 +16,71 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: netflix
         service: encoding
+        tier: worker
     spec:
       containers:
-      - name: worker
-        image: busybox
-        command: ["sh", "-c", "while true; do echo 'encoding...'; sleep 30; done"]
+      - name: encoder
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import time
+          import math
+          import random
+
+          print("Encoding worker started")
+          while True:
+              # Simulate video encoding (CPU-intensive)
+              start = time.time()
+              result = 0
+              for i in range(100000):
+                  result += math.sin(i) * math.cos(i)
+
+              elapsed = time.time() - start
+              print(f"Encoded frame in {elapsed:.2f}s, result={result:.2f}")
+              time.sleep(0.5)
         resources:
+          requests:
+            cpu: "350m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+      - name: api-client
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://netflix-origin-api:8080/api/jobs || true
+            sleep 2
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
           limits:
             cpu: "50m"
             memory: "32Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netflix-encoding
+  labels:
+    company: netflix
+    service: encoding
+spec:
+  selector:
+    company: netflix
+    service: encoding
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

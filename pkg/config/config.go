@@ -32,7 +32,7 @@ type GameConfig struct {
 	Kubeconfig    string `json:"kubeconfig"`
 }
 
-// configDir returns the config directory path
+// configDir returns config directory path
 func configDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -41,7 +41,7 @@ func configDir() string {
 	return filepath.Join(home, ".clustership")
 }
 
-// configPath returns the full config file path
+// configPath returns config file path
 func configPath() string {
 	return filepath.Join(configDir(), "config.json")
 }

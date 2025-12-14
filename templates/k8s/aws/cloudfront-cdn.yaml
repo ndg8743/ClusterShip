@@ -6,6 +6,7 @@ metadata:
     app: clustership
     company: aws
     service: cloudfront-cdn
+    tier: edge
 spec:
   replicas: 3
   selector:
@@ -15,15 +16,68 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: aws
         service: cloudfront-cdn
+        tier: edge
     spec:
       containers:
       - name: nginx
         image: nginx:alpine
         ports:
         - containerPort: 80
+          name: http
         resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
           limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+      - name: origin-client
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://aws-ec2-api:8080/api/status || true
+            curl -s http://aws-s3-storage:9000/minio/health/live || true
+            sleep 0.5
+          done
+        resources:
+          requests:
             cpu: "50m"
             memory: "32Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-cloudfront-cdn
+  labels:
+    company: aws
+    service: cloudfront-cdn
+spec:
+  selector:
+    company: aws
+    service: cloudfront-cdn
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  type: ClusterIP

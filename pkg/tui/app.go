@@ -3,6 +3,8 @@ package tui
 import (
 	"clustership/pkg/config"
 	"clustership/pkg/game"
+	"clustership/pkg/k8s"
+	"context"
 	"fmt"
 	"time"
 
@@ -15,8 +17,32 @@ type tickMsg time.Time
 
 // doTick returns a command that sends a tick after a delay
 func doTick() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+	return doTickWithDelay(200)
+}
+
+// doTickWithDelay returns a tick command with custom delay in milliseconds
+func doTickWithDelay(ms int) tea.Cmd {
+	return tea.Tick(time.Duration(ms)*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+// tick returns a tick command using the configured delay
+func (m *AppModel) tick() tea.Cmd {
+	delay := m.cfg.TurnDelayMs
+	if delay <= 0 {
+		delay = 200 // default
+	}
+	return doTickWithDelay(delay)
+}
+
+// k8sPollMsg triggers K8s event polling
+type k8sPollMsg struct{}
+
+// doK8sPoll returns a command that polls K8s events every second
+func doK8sPoll() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return k8sPollMsg{}
 	})
 }
 
@@ -33,22 +59,24 @@ const (
 	StatePodView // view pod details for selected service
 	StateGameOver
 	// settings states
-	StateSettings      // main settings menu
-	StateSettingsBoard // board width/height
-	StateSettingsShips // ships, racks config
-	StateSettingsPods  // pods per rack
-	StateSettingsBots  // bot count, difficulty
-	StateSettingsK8s   // k8s integration options
+	StateSettings       // main settings menu
+	StateSettingsBoard  // board width/height
+	StateSettingsShips  // ships, racks config
+	StateSettingsPods   // pods per rack
+	StateSettingsBots   // bot count, difficulty
+	StateSettingsTiming // turn delay, animation speed
+	StateSettingsK8s    // k8s integration options
 )
 
-// ViewLevel represents the hierarchical view depth (1-4 keys)
+// ViewLevel represents the hierarchical view depth (1-5 keys)
 type ViewLevel int
 
 const (
-	ViewMap  ViewLevel = 1 // overview map
-	ViewShip ViewLevel = 2 // ship/region detail
-	ViewRack ViewLevel = 3 // rack detail with pods
-	ViewYAML ViewLevel = 4 // yaml manifest
+	ViewMap        ViewLevel = 1 // overview map
+	ViewShip       ViewLevel = 2 // ship/region detail
+	ViewRack       ViewLevel = 3 // rack detail with pods
+	ViewYAML       ViewLevel = 4 // yaml manifest
+	ViewRackLayout ViewLevel = 5 // visual rack grid with pod distribution
 )
 
 // AppModel is the main Bubble Tea model for the game
@@ -127,6 +155,14 @@ type AppModel struct {
 	// pod view state (legacy, kept for backward compat)
 	podViewCompany  *game.Company // company whose services are being viewed
 	podViewSvcIndex int           // selected service index
+
+	// K8s integration fields
+	k8sClient    *k8s.Client                       // K8s cluster client
+	k8sWatcher   *k8s.PodWatcher                   // watches for pod events
+	k8sManifests map[string][]*k8s.ServiceManifest // companyID -> manifests
+	k8sDeployed  bool                              // whether K8s resources are deployed
+	k8sError     error                             // any K8s connection error
+	k8sPodEvents []k8s.PodEvent                    // recent K8s events for display
 }
 
 // NewAppModel creates a fresh game instance
@@ -141,7 +177,7 @@ func NewAppModel() AppModel {
 		state:         StateMenu,
 		styles:        DefaultStyles(),
 		menuItems:     []string{"New Game", "Demo", "Settings", "Quit"},
-		settingsItems: []string{"Board", "Ships", "Pods", "Bots", "Kubernetes", "Save & Back"},
+		settingsItems: []string{"Board", "Ships", "Pods", "Bots", "Timing", "Kubernetes", "Save & Back"},
 		companies:     game.ListCompanies(),
 		cfg:           cfg,
 		viewW:         30, // viewport size
@@ -160,6 +196,274 @@ func NewAppModel() AppModel {
 		board:        nil,
 	}
 }
+
+// ============================================================================
+// K8s Integration Methods
+// ============================================================================
+
+// initK8sClient initializes the K8s client if real K8s mode is enabled
+func (m *AppModel) initK8sClient() error {
+	if !m.cfg.EnableRealK8s || m.k8sClient != nil {
+		return nil
+	}
+
+	client, err := k8s.NewClient(m.cfg.Kubeconfig, m.cfg.K8sNamespace)
+	if err != nil {
+		m.k8sError = fmt.Errorf("failed to create K8s client: %w", err)
+		return m.k8sError
+	}
+
+	if !client.IsClusterAvailable() {
+		m.k8sError = fmt.Errorf("K8s cluster not available")
+		return m.k8sError
+	}
+
+	m.k8sClient = client
+	m.k8sError = nil
+	return nil
+}
+
+// deployK8sResources deploys K8s manifests for all companies in the game
+func (m *AppModel) deployK8sResources() error {
+	if !m.cfg.EnableRealK8s || m.k8sClient == nil {
+		return nil
+	}
+
+	ctx := context.Background()
+
+	// Ensure namespace exists
+	if err := m.k8sClient.EnsureNamespace(ctx, m.cfg.K8sNamespace); err != nil {
+		m.addBattleLog(fmt.Sprintf("K8s: Failed to create namespace: %v", err))
+		return err
+	}
+
+	templatesDir := k8s.GetTemplatesDir()
+	m.k8sManifests = make(map[string][]*k8s.ServiceManifest)
+
+	// Deploy player company manifests
+	if manifests, err := k8s.LoadCompanyManifests(templatesDir, m.playerCompany.ID); err == nil && len(manifests) > 0 {
+		m.k8sManifests[m.playerCompany.ID] = manifests
+		for _, manifest := range manifests {
+			if err := m.k8sClient.DeployManifest(ctx, manifest); err != nil {
+				m.addBattleLog(fmt.Sprintf("K8s: Deploy failed: %s - %v", manifest.Name, err))
+			} else {
+				m.addBattleLog(fmt.Sprintf("K8s: Deployed %s", manifest.Name))
+			}
+		}
+	}
+
+	// Deploy enemy manifests
+	for _, enemy := range m.enemyCompanies {
+		if manifests, err := k8s.LoadCompanyManifests(templatesDir, enemy.ID); err == nil && len(manifests) > 0 {
+			m.k8sManifests[enemy.ID] = manifests
+			for _, manifest := range manifests {
+				if err := m.k8sClient.DeployManifest(ctx, manifest); err != nil {
+					m.addBattleLog(fmt.Sprintf("K8s: Deploy failed: %s - %v", manifest.Name, err))
+				} else {
+					m.addBattleLog(fmt.Sprintf("K8s: Deployed %s", manifest.Name))
+				}
+			}
+		}
+	}
+
+	m.k8sDeployed = true
+	m.addBattleLog("K8s: All resources deployed")
+	return nil
+}
+
+// startK8sWatcher begins watching K8s pod events
+func (m *AppModel) startK8sWatcher() error {
+	if !m.cfg.EnableRealK8s || m.k8sClient == nil {
+		return nil
+	}
+
+	m.k8sWatcher = k8s.NewPodWatcher(m.k8sClient)
+	m.k8sPodEvents = make([]k8s.PodEvent, 0, 20)
+
+	return m.k8sWatcher.Start()
+}
+
+// pollK8sEvents drains events from the watcher channel
+func (m *AppModel) pollK8sEvents() {
+	if m.k8sWatcher == nil {
+		return
+	}
+
+	// Drain all available events
+	for {
+		select {
+		case event, ok := <-m.k8sWatcher.Events():
+			if !ok {
+				return
+			}
+			m.k8sPodEvents = append(m.k8sPodEvents, event)
+			if len(m.k8sPodEvents) > 20 {
+				m.k8sPodEvents = m.k8sPodEvents[1:]
+			}
+
+			// Sync deleted/terminating pods to game state
+			if event.Type == "Deleted" || event.Pod.Status == k8s.PodTerminating {
+				m.syncK8sPodDeletion(event.Pod)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// syncK8sPodDeletion updates game state when a real K8s pod is deleted
+func (m *AppModel) syncK8sPodDeletion(podInfo k8s.PodInfo) {
+	if m.board == nil {
+		return
+	}
+
+	// Find the fleet for this company
+	fleet, ok := m.board.Fleets[podInfo.Company]
+	if !ok || fleet == nil {
+		return
+	}
+
+	// Find and update the matching game pod
+	for _, svc := range fleet.Company.Services {
+		if svc.ID != podInfo.ServiceID {
+			continue
+		}
+		for _, pod := range svc.Pods {
+			if pod.Status == game.PodRunning {
+				// Mark first matching running pod as terminated
+				pod.Status = game.PodTerminated
+				pod.Health = 0
+				m.addBattleLog(fmt.Sprintf("K8s: Pod %s terminated externally", podInfo.Name))
+				return
+			}
+		}
+	}
+}
+
+// performAttackWithK8sSync executes game attack and syncs to K8s
+func (m *AppModel) performAttackWithK8sSync(x, y int, attackerID, targetID string) (*ShotResult, []game.GameEvent) {
+	result, events := m.board.AttackMulti(x, y, attackerID, targetID)
+
+	// If K8s enabled and we killed a pod, delete the real K8s pod
+	if m.cfg.EnableRealK8s && m.k8sClient != nil && result != nil && result.KilledPod && result.HitPod != nil {
+		m.deleteK8sPodForGamePod(result.HitPod, targetID)
+	}
+
+	return result, events
+}
+
+// deleteK8sPodForGamePod deletes the corresponding K8s pod when game pod is killed
+func (m *AppModel) deleteK8sPodForGamePod(gamePod *game.Pod, companyID string) {
+	if gamePod == nil || m.k8sClient == nil {
+		return
+	}
+
+	// Find the company's manifests
+	manifests := m.k8sManifests[companyID]
+	if manifests == nil {
+		return
+	}
+
+	// Find manifest matching this service and scale down or delete
+	ctx := context.Background()
+	for _, manifest := range manifests {
+		if manifest.ServiceID == gamePod.ServiceID {
+			// Use DeleteService to remove pods for this service
+			if err := m.k8sClient.DeleteService(ctx, manifest.ServiceID, manifest.Company); err != nil {
+				m.addBattleLog(fmt.Sprintf("K8s: Delete failed: %s", manifest.ServiceID))
+			} else {
+				m.addBattleLog(fmt.Sprintf("K8s: Deleted %s service pods", manifest.ServiceID))
+			}
+			return
+		}
+	}
+}
+
+// cleanupK8sResources stops watcher and deletes all K8s resources
+func (m *AppModel) cleanupK8sResources() {
+	if m.k8sWatcher != nil {
+		m.k8sWatcher.Stop()
+		m.k8sWatcher = nil
+	}
+
+	if m.k8sClient != nil && m.k8sDeployed {
+		ctx := context.Background()
+		if err := m.k8sClient.CleanupNamespace(ctx, m.cfg.K8sNamespace); err != nil {
+			// Log error but don't fail
+			m.addBattleLog(fmt.Sprintf("K8s: Cleanup error: %v", err))
+		} else {
+			m.addBattleLog("K8s: Resources cleaned up")
+		}
+		m.k8sDeployed = false
+	}
+
+	m.k8sManifests = nil
+	m.k8sPodEvents = nil
+}
+
+// renderK8sStatus returns a string showing K8s integration status
+func (m *AppModel) renderK8sStatus() string {
+	if !m.cfg.EnableRealK8s {
+		return m.styles.Muted.Render("K8s: Disabled")
+	}
+
+	if m.k8sError != nil {
+		return m.styles.Error.Render(fmt.Sprintf("K8s: Error - %v", m.k8sError))
+	}
+
+	if !m.k8sDeployed {
+		return m.styles.Warning.Render("K8s: Not deployed")
+	}
+
+	// Get real pod status
+	if m.k8sClient != nil {
+		ctx := context.Background()
+		pods, err := m.k8sClient.GetPodStatus(ctx, m.cfg.K8sNamespace, "app=clustership")
+		if err == nil {
+			running, pending := 0, 0
+			for _, p := range pods {
+				if p.Status == k8s.PodRunning {
+					running++
+				} else if p.Status == k8s.PodPending {
+					pending++
+				}
+			}
+			return m.styles.Success.Render(fmt.Sprintf("K8s: %d running, %d pending", running, pending))
+		}
+	}
+
+	return m.styles.Success.Render("K8s: Active")
+}
+
+// renderK8sEvents renders recent K8s pod events
+func (m *AppModel) renderK8sEvents() string {
+	if !m.cfg.EnableRealK8s || len(m.k8sPodEvents) == 0 {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, m.styles.Title.Render("K8s EVENTS"))
+
+	// Show last 5 events
+	start := len(m.k8sPodEvents) - 5
+	if start < 0 {
+		start = 0
+	}
+
+	for _, ev := range m.k8sPodEvents[start:] {
+		line := fmt.Sprintf("%s: %s", ev.Type, ev.Message)
+		if len(line) > 40 {
+			line = line[:40] + "..."
+		}
+		lines = append(lines, m.styles.Muted.Render(line))
+	}
+
+	return "\n" + lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+// ============================================================================
+// End K8s Integration Methods
+// ============================================================================
 
 // Init is the Bubble Tea init function
 func (m AppModel) Init() tea.Cmd {
@@ -180,6 +484,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m.handleTick()
 
+	case k8sPollMsg:
+		// Poll K8s events during battle
+		m.pollK8sEvents()
+		// Continue polling if in battle and K8s is enabled
+		if m.state == StateBattle && m.cfg.EnableRealK8s && m.k8sWatcher != nil {
+			return m, doK8sPoll()
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// global keys first
 		switch msg.String() {
@@ -188,6 +501,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			if m.state == StateMenu {
 				return m, tea.Quit
+			}
+			// Cleanup K8s resources when leaving battle
+			if m.state == StateBattle || m.state == StateGameOver {
+				m.cleanupK8sResources()
 			}
 			// q goes back to menu in other states
 			m.state = StateMenu
@@ -222,6 +539,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSettingsPods(msg)
 		case StateSettingsBots:
 			return m.updateSettingsBots(msg)
+		case StateSettingsTiming:
+			return m.updateSettingsTiming(msg)
 		case StateSettingsK8s:
 			return m.updateSettingsK8s(msg)
 		}
@@ -280,6 +599,8 @@ func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.playerCompany = game.CompanyFromTemplate(template)
 		m.playerCompany.ID = "player"
+		// Adjust to match config settings (ships, racks, pods)
+		m.playerCompany.AdjustToConfig(m.cfg.ShipsPerPlayer, m.cfg.RacksPerShip, m.cfg.PodsPerRack)
 
 		// Move to enemy count selection
 		m.state = StateEnemyCountSelect
@@ -386,6 +707,8 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			template, _ := game.LoadCompanyTemplate(enemyID)
 			if template != nil {
 				enemy := game.CompanyFromTemplate(template)
+				// Adjust enemy to match config settings
+				enemy.AdjustToConfig(m.cfg.ShipsPerPlayer, m.cfg.RacksPerShip, m.cfg.PodsPerRack)
 				m.enemyCompanies = append(m.enemyCompanies, enemy)
 				allCompanies = append(allCompanies, enemy)
 			}
@@ -396,8 +719,8 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.enemyCompany = m.enemyCompanies[0]
 		}
 
-		// Create multi-company board (50x50)
-		m.board = NewMultiBoard(50, 50, allCompanies)
+		// Create multi-company board using config dimensions
+		m.board = NewMultiBoard(m.cfg.BoardWidth, m.cfg.BoardHeight, allCompanies)
 
 		// Build opponent list for each AI
 		allIDs := make([]string, 0, len(allCompanies))
@@ -405,7 +728,7 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			allIDs = append(allIDs, c.ID)
 		}
 
-		// Create AI for each enemy
+		// Create AI for each enemy using config dimensions
 		m.ais = make(map[string]*AIPlayer)
 		for _, enemy := range m.enemyCompanies {
 			opponents := make([]string, 0)
@@ -414,7 +737,7 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					opponents = append(opponents, id)
 				}
 			}
-			m.ais[enemy.ID] = NewMultiAIPlayer(enemy.ID, enemy.AIStrategy, 50, 50, opponents)
+			m.ais[enemy.ID] = NewMultiAIPlayer(enemy.ID, enemy.AIStrategy, m.cfg.BoardWidth, m.cfg.BoardHeight, opponents)
 		}
 
 		// Legacy single AI
@@ -435,21 +758,54 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			for _, enemy := range m.enemyCompanies {
 				opponents = append(opponents, enemy.ID)
 			}
-			m.playerAI = NewMultiAIPlayer("player", game.AIHunter, 50, 50, opponents)
+			m.playerAI = NewMultiAIPlayer("player", game.AIHunter, m.cfg.BoardWidth, m.cfg.BoardHeight, opponents)
 		}
 
 		// Start cursor in center of board
-		m.cursor = [2]int{25, 25}
-		m.viewport = [2]int{10, 10}
+		m.cursor = [2]int{m.cfg.BoardWidth / 2, m.cfg.BoardHeight / 2}
+		// Calculate viewport with bounds checking to prevent negative values
+		vpX := m.cfg.BoardWidth/2 - m.viewW/2
+		vpY := m.cfg.BoardHeight/2 - m.viewH/2
+		if vpX < 0 {
+			vpX = 0
+		}
+		if vpY < 0 {
+			vpY = 0
+		}
+		m.viewport = [2]int{vpX, vpY}
 		m.battleLog = make([]string, 0)
+
+		// Initialize K8s if enabled
+		if m.cfg.EnableRealK8s {
+			if err := m.initK8sClient(); err != nil {
+				m.addBattleLog(fmt.Sprintf("K8s: %v (continuing in simulation mode)", err))
+			} else {
+				// Deploy manifests
+				m.deployK8sResources()
+				// Start watching pods
+				m.startK8sWatcher()
+			}
+		}
 
 		m.state = StateBattle
 		m.isPlayerTurn = true
 		m.turn = 1
 
+		// Build initial commands
+		var cmds []tea.Cmd
+
+		// Start K8s polling if enabled
+		if m.cfg.EnableRealK8s && m.k8sWatcher != nil {
+			cmds = append(cmds, doK8sPoll())
+		}
+
 		// In demo mode, start auto-play
 		if m.demoMode {
-			return m, doTick()
+			cmds = append(cmds, doTickWithDelay(m.cfg.TurnDelayMs))
+		}
+
+		if len(cmds) > 0 {
+			return m, tea.Batch(cmds...)
 		}
 	case "esc":
 		if len(m.selectedEnemies) > 1 {
@@ -511,6 +867,9 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedSvcID = m.playerCompany.Services[0].ID
 			m.selectedService = m.playerCompany.Services[0]
 		}
+		return m, nil
+	case "5":
+		m.viewLevel = ViewRackLayout
 		return m, nil
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -586,8 +945,8 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter", " ":
 		if m.isPlayerTurn && m.board != nil && !m.animating && !m.demoMode {
-			// Player attacks using multi-company system
-			result, _ := m.board.AttackMulti(m.cursor[0], m.cursor[1], "player", "")
+			// Player attacks using multi-company system (with K8s sync)
+			result, _ := m.performAttackWithK8sSync(m.cursor[0], m.cursor[1], "player", "")
 			if result == nil {
 				// Already attacked this cell, don't advance turn
 				m.lastMessage = "Already attacked here!"
@@ -606,7 +965,7 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !m.gameOver {
 				// Advance to next turn in queue
 				m.advanceTurn()
-				return m, doTick()
+				return m, doTickWithDelay(m.cfg.TurnDelayMs)
 			}
 		}
 	case "tab":
@@ -670,8 +1029,10 @@ func (m AppModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 3:
 			m.state = StateSettingsBots
 		case 4:
+			m.state = StateSettingsTiming
+		case 5:
 			m.state = StateSettingsK8s
-		case 5: // save and back
+		case 6: // save and back
 			m.cfg.Save()
 			m.state = StateMenu
 		}
@@ -772,6 +1133,21 @@ func (m AppModel) updateSettingsBots(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateSettingsTiming handles turn delay config
+func (m AppModel) updateSettingsTiming(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k", "right", "l":
+		m.cfg.TurnDelayMs += 50
+		m.cfg.Validate()
+	case "down", "j", "left", "h":
+		m.cfg.TurnDelayMs -= 50
+		m.cfg.Validate()
+	case "esc", "enter":
+		m.state = StateSettings
+	}
+	return m, nil
+}
+
 // updateSettingsK8s handles kubernetes config
 func (m AppModel) updateSettingsK8s(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -803,12 +1179,12 @@ func (m AppModel) handleTick() (tea.Model, tea.Cmd) {
 		var result *ShotResult
 
 		if ai != nil {
-			// AI attacks using stored target ID from KNN selection
+			// AI attacks using stored target ID from KNN selection (with K8s sync)
 			targetID := m.pendingTargetID
-			result, _ = m.board.AttackMulti(attack[0], attack[1], currentCompanyID, targetID)
+			result, _ = m.performAttackWithK8sSync(attack[0], attack[1], currentCompanyID, targetID)
 			ai.RecordResultAgainst(attack[0], attack[1], targetID, result)
 		} else {
-			result, _ = m.board.AttackMulti(attack[0], attack[1], currentCompanyID, "")
+			result, _ = m.performAttackWithK8sSync(attack[0], attack[1], currentCompanyID, "")
 		}
 
 		// Log the attack
@@ -824,7 +1200,7 @@ func (m AppModel) handleTick() (tea.Model, tea.Cmd) {
 		}
 
 		if len(m.pendingAttacks) > 0 {
-			return m, doTick()
+			return m, doTickWithDelay(m.cfg.TurnDelayMs)
 		}
 
 		// Done with this company's turn
@@ -835,7 +1211,7 @@ func (m AppModel) handleTick() (tea.Model, tea.Cmd) {
 			m.advanceTurn()
 			// If next turn is AI, continue ticking
 			if !m.isPlayerTurn || m.demoMode {
-				return m, doTick()
+				return m, doTickWithDelay(m.cfg.TurnDelayMs)
 			}
 		}
 		return m, nil
@@ -848,7 +1224,7 @@ func (m AppModel) handleTick() (tea.Model, tea.Cmd) {
 		m.cursor = target
 
 		m.centerViewportOn(target[0], target[1])
-		result, _ := m.board.AttackMulti(target[0], target[1], "player", targetID)
+		result, _ := m.performAttackWithK8sSync(target[0], target[1], "player", targetID)
 		m.playerAI.RecordResultAgainst(target[0], target[1], targetID, result)
 
 		player := m.playerCompany.Name
@@ -863,19 +1239,19 @@ func (m AppModel) handleTick() (tea.Model, tea.Cmd) {
 		m.checkMultiWinCondition()
 		if !m.gameOver {
 			m.advanceTurn()
-			return m, doTick()
+			return m, doTickWithDelay(m.cfg.TurnDelayMs)
 		}
 	}
 
 	// Start next AI turn if it's an AI's turn
 	if !m.isPlayerTurn && !m.animating && !m.gameOver {
 		if m.startAITurn(currentCompanyID) {
-			return m, doTick()
+			return m, doTickWithDelay(m.cfg.TurnDelayMs)
 		}
 		// AI couldn't start turn (no AI for this company), skip to next
 		m.advanceTurn()
 		if !m.isPlayerTurn {
-			return m, doTick()
+			return m, doTickWithDelay(m.cfg.TurnDelayMs)
 		}
 	}
 
@@ -1006,6 +1382,8 @@ func (m AppModel) View() string {
 		return m.renderSettingsPods()
 	case StateSettingsBots:
 		return m.renderSettingsBots()
+	case StateSettingsTiming:
+		return m.renderSettingsTiming()
 	case StateSettingsK8s:
 		return m.renderSettingsK8s()
 	case StateCompanySelect:
@@ -1139,6 +1517,40 @@ func (m AppModel) renderSettingsBots() string {
 	visual += "  hard:   aggressive hunting\n"
 
 	hint := m.styles.Muted.Render("\n[arrows] adjust  [enter/esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
+	)
+}
+
+// renderSettingsTiming draws timing/animation config
+func (m AppModel) renderSettingsTiming() string {
+	title := m.styles.Title.Render("TIMING SETTINGS")
+
+	info := fmt.Sprintf("Turn Delay: %dms\n", m.cfg.TurnDelayMs)
+
+	// Visual speed indicator
+	var speedLabel string
+	switch {
+	case m.cfg.TurnDelayMs <= 100:
+		speedLabel = "LIGHTNING FAST"
+	case m.cfg.TurnDelayMs <= 200:
+		speedLabel = "Fast"
+	case m.cfg.TurnDelayMs <= 500:
+		speedLabel = "Normal"
+	case m.cfg.TurnDelayMs <= 1000:
+		speedLabel = "Slow"
+	default:
+		speedLabel = "Very Slow"
+	}
+
+	visual := fmt.Sprintf("\nSpeed: %s\n", speedLabel)
+	visual += "\nThis controls how fast AI turns animate.\n"
+	visual += "Lower = faster gameplay, harder to follow.\n"
+	visual += "Higher = slower, easier to watch battles.\n"
+	visual += fmt.Sprintf("\nRange: 50ms - 2000ms (current: %dms)\n", m.cfg.TurnDelayMs)
+
+	hint := m.styles.Muted.Render("\n[arrows] adjust (+/- 50ms)  [enter/esc] back")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, title, "", info, visual, hint),
@@ -1325,6 +1737,8 @@ func (m AppModel) renderBattle() string {
 		return m.renderRackView()
 	case ViewYAML:
 		return m.renderYAMLView()
+	case ViewRackLayout:
+		return m.renderRackLayoutView()
 	default:
 		return m.renderMapView()
 	}
@@ -1337,7 +1751,7 @@ func (m AppModel) renderMapView() string {
 	if m.isPlayerTurn {
 		turnInfo += " | YOUR TURN"
 	}
-	viewIndicator := fmt.Sprintf(" [VIEW 1/4]")
+	viewIndicator := fmt.Sprintf(" [VIEW 1/5]")
 	header := m.styles.Header.Render(
 		fmt.Sprintf("CLUSTERSHIP - %s vs %s   %s%s",
 			m.playerCompany.Name, m.enemyCompany.Name, turnInfo, viewIndicator),
@@ -1360,7 +1774,7 @@ func (m AppModel) renderMapView() string {
 
 	// footer with controls
 	footer := m.styles.Footer.Render(
-		"[1-4] view level  [arrows] move  [enter] fire  [c] cycle  [q] quit",
+		"[1-5] view level  [arrows] move  [enter] fire  [c] cycle  [q] quit",
 	)
 
 	return m.styles.App.Render(
@@ -1376,7 +1790,7 @@ func (m AppModel) renderMapView() string {
 // renderShipView shows ship/region detail (level 2)
 func (m AppModel) renderShipView() string {
 	header := m.styles.Header.Render(
-		fmt.Sprintf("SHIP VIEW - %s  [VIEW 2/4]", m.playerCompany.Name),
+		fmt.Sprintf("SHIP VIEW - %s  [VIEW 2/5]", m.playerCompany.Name),
 	)
 
 	var content string
@@ -1432,7 +1846,7 @@ func (m AppModel) renderShipView() string {
 		}
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select ship  [1-4] change view  [q] quit")
+	hint := m.styles.Muted.Render("\n[up/down] select ship  [1-5] change view  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -1442,7 +1856,7 @@ func (m AppModel) renderShipView() string {
 // renderRackView shows rack detail with pods (level 3)
 func (m AppModel) renderRackView() string {
 	header := m.styles.Header.Render(
-		fmt.Sprintf("RACK VIEW - %s  [VIEW 3/4]", m.playerCompany.Name),
+		fmt.Sprintf("RACK VIEW - %s  [VIEW 3/5]", m.playerCompany.Name),
 	)
 
 	var content string
@@ -1498,7 +1912,7 @@ func (m AppModel) renderRackView() string {
 		}
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select rack  [1-4] change view  [q] quit")
+	hint := m.styles.Muted.Render("\n[up/down] select rack  [1-5] change view  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -1507,7 +1921,7 @@ func (m AppModel) renderRackView() string {
 
 // renderYAMLView shows YAML manifest (level 4, fog of war applies)
 func (m AppModel) renderYAMLView() string {
-	header := m.styles.Header.Render("YAML VIEW  [VIEW 4/4]")
+	header := m.styles.Header.Render("YAML VIEW  [VIEW 4/5]")
 
 	var content string
 
@@ -1521,7 +1935,7 @@ func (m AppModel) renderYAMLView() string {
 		content += m.renderServiceYAMLList(enemy, false) + "\n"
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select service  [1-4] change view  [q] quit")
+	hint := m.styles.Muted.Render("\n[up/down] select service  [1-5] change view  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -1671,6 +2085,248 @@ func (m AppModel) canSeeServiceYAML(company *game.Company, svc *game.Service) bo
 	return false
 }
 
+// renderRackLayoutView shows a visual grid of rack/pod distribution (VIEW 5)
+func (m AppModel) renderRackLayoutView() string {
+	header := m.styles.Header.Render("RACK LAYOUT  [VIEW 5/5]")
+
+	var content string
+
+	// Show player company first
+	content += m.styles.Subtitle.Render(fmt.Sprintf("YOUR FLEET: %s", m.playerCompany.Name)) + "\n\n"
+	content += m.renderCompanyRackLayout(m.playerCompany, true) + "\n"
+
+	// Show enemy companies
+	for _, enemy := range m.enemyCompanies {
+		content += m.styles.Subtitle.Render(fmt.Sprintf("ENEMY: %s", enemy.Name)) + "\n\n"
+		content += m.renderCompanyRackLayout(enemy, false) + "\n"
+	}
+
+	// Legend
+	legend := m.styles.Muted.Render(
+		"LEGEND: [!]=Hard Affinity (critical)  [~]=Spread  [o]=Soft  [-]=None  "+
+			"X=Destroyed  _=Empty") + "\n"
+
+	hint := m.styles.Muted.Render("[1-5] change view  [q] quit")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left, header, "", content, legend, hint),
+	)
+}
+
+// renderCompanyRackLayout renders rack layout for a single company
+func (m AppModel) renderCompanyRackLayout(company *game.Company, isOwn bool) string {
+	var output string
+
+	for _, region := range company.Regions {
+		// Ship header with status
+		status := "OPERATIONAL"
+		statusStyle := m.styles.Success
+		if region.IsDestroyed {
+			status = "DESTROYED"
+			statusStyle = m.styles.Error
+		} else {
+			// Check how damaged
+			destroyedRacks := 0
+			for _, rack := range region.Racks {
+				if rack.IsDestroyed {
+					destroyedRacks++
+				}
+			}
+			if destroyedRacks > 0 {
+				status = fmt.Sprintf("DAMAGED (%d/%d)", destroyedRacks, len(region.Racks))
+				statusStyle = m.styles.Warning
+			}
+		}
+
+		shipType := getShipType(len(region.Racks))
+		output += fmt.Sprintf("%s %s [%d racks] - %s\n",
+			region.Name, shipType, len(region.Racks), statusStyle.Render(status))
+
+		// Build rack grid
+		rackWidth := 10 // characters per rack column
+		numRacks := len(region.Racks)
+
+		// Top border
+		topBorder := "+"
+		for i := 0; i < numRacks; i++ {
+			topBorder += fmt.Sprintf("%s+", repeatChar('-', rackWidth))
+		}
+		output += topBorder + "\n"
+
+		// Rack names row
+		nameRow := "|"
+		for _, rack := range region.Racks {
+			rackLabel := rack.ID
+			if len(rackLabel) > rackWidth-2 {
+				rackLabel = rackLabel[:rackWidth-2]
+			}
+			if rack.IsDestroyed {
+				rackLabel = "DESTROYED"
+			}
+			nameRow += fmt.Sprintf(" %-*s|", rackWidth-1, rackLabel)
+		}
+		output += nameRow + "\n"
+
+		// Middle border
+		output += topBorder + "\n"
+
+		// Build pod lists per rack (up to 4 pods shown per rack)
+		maxPodRows := 4
+		podRows := make([][]string, maxPodRows)
+		for i := range podRows {
+			podRows[i] = make([]string, numRacks)
+		}
+
+		for rackIdx, rack := range region.Racks {
+			if rack.IsDestroyed {
+				// Show X for destroyed rack
+				podRows[0][rackIdx] = "    X    "
+				for row := 1; row < maxPodRows; row++ {
+					podRows[row][rackIdx] = "         "
+				}
+				continue
+			}
+
+			// Collect pods on this rack grouped by service
+			svcPods := make(map[string]int)        // serviceID -> count
+			svcAffinity := make(map[string]string) // serviceID -> affinity icon
+			svcNames := make(map[string]string)    // serviceID -> abbreviated name
+
+			for _, pod := range rack.Pods {
+				if pod.Status == game.PodTerminated {
+					continue
+				}
+				svcPods[pod.ServiceID]++
+
+				// Get affinity icon for this service
+				for _, svc := range company.Services {
+					if svc.ID == pod.ServiceID {
+						svcAffinity[pod.ServiceID] = getAffinityIcon(svc.Affinity)
+						// Abbreviate service name to 3-4 chars
+						svcNames[pod.ServiceID] = abbreviateService(svc.Name)
+						break
+					}
+				}
+			}
+
+			// Convert to display rows
+			rowIdx := 0
+			for svcID, count := range svcPods {
+				if rowIdx >= maxPodRows {
+					break
+				}
+				icon := svcAffinity[svcID]
+				name := svcNames[svcID]
+				if name == "" {
+					name = svcID[:min(4, len(svcID))]
+				}
+
+				// Format: [!]API(2)
+				entry := fmt.Sprintf("%s%s", icon, name)
+				if count > 1 {
+					entry += fmt.Sprintf("(%d)", count)
+				}
+				// Pad to rack width
+				if len(entry) < rackWidth-1 {
+					entry = fmt.Sprintf("%-*s", rackWidth-1, entry)
+				}
+				podRows[rowIdx][rackIdx] = entry
+				rowIdx++
+			}
+
+			// Fill remaining rows with empty space
+			for ; rowIdx < maxPodRows; rowIdx++ {
+				podRows[rowIdx][rackIdx] = fmt.Sprintf("%-*s", rackWidth-1, "")
+			}
+		}
+
+		// Render pod rows
+		for _, row := range podRows {
+			rowStr := "|"
+			for _, cell := range row {
+				rowStr += fmt.Sprintf(" %s|", cell)
+			}
+			output += rowStr + "\n"
+		}
+
+		// Bottom border
+		output += topBorder + "\n"
+
+		// Capacity row
+		capRow := " "
+		for _, rack := range region.Racks {
+			if rack.IsDestroyed {
+				capRow += fmt.Sprintf(" %-*s ", rackWidth-1, "N/A")
+			} else {
+				// Count running pods
+				running := 0
+				for _, p := range rack.Pods {
+					if p.Status == game.PodRunning {
+						running++
+					}
+				}
+				capStr := fmt.Sprintf("%d/%d pods", running, rack.Capacity)
+				capRow += fmt.Sprintf(" %-*s ", rackWidth-1, capStr)
+			}
+		}
+		output += m.styles.Muted.Render(capRow) + "\n\n"
+	}
+
+	return output
+}
+
+// getShipType returns ship type name based on rack count
+func getShipType(racks int) string {
+	switch racks {
+	case 5:
+		return "CARRIER"
+	case 4:
+		return "CRUISER"
+	case 3:
+		return "DESTROYER"
+	case 2:
+		return "PATROL"
+	default:
+		return "VESSEL"
+	}
+}
+
+// abbreviateService returns a short abbreviation for a service name
+func abbreviateService(name string) string {
+	// Common abbreviations
+	abbrevs := map[string]string{
+		"CDN Edge Cache":     "CDN",
+		"Playback Service":   "Play",
+		"Origin API":         "API",
+		"Primary Database":   "DB",
+		"Encoding Workers":   "Enc",
+		"EC2 API Gateway":    "API",
+		"CloudFront CDN":     "CDN",
+		"S3 Storage":         "S3",
+		"Lambda Workers":     "Lamb",
+		"RDS Database":       "RDS",
+	}
+
+	if abbr, ok := abbrevs[name]; ok {
+		return abbr
+	}
+
+	// Default: first 4 characters
+	if len(name) > 4 {
+		return name[:4]
+	}
+	return name
+}
+
+// repeatChar returns a string with char repeated n times
+func repeatChar(char rune, n int) string {
+	result := make([]rune, n)
+	for i := range result {
+		result[i] = char
+	}
+	return string(result)
+}
+
 // renderSimpleBoard renders a simple view of the enemy board
 func (m AppModel) renderSimpleBoard() string {
 	if m.board == nil {
@@ -1744,6 +2400,9 @@ func (m AppModel) renderSimpleBoard() string {
 		cursorInfo += " [DEBUG: FOG OFF]"
 	}
 
+	// Hover info - show details about what's at cursor position
+	hoverInfo := m.getHoverInfo()
+
 	// legend
 	legend := fmt.Sprintf("%s=Water  %s=Miss  %s=Hit  %s=Ship  %s=Destroyed",
 		m.styles.Water.Render(SymWater),
@@ -1755,14 +2414,19 @@ func (m AppModel) renderSimpleBoard() string {
 	// controls
 	controls := "[arrows] move  [WASD] pan  [enter] fire  [p] pods  [v] debug"
 
+	// Build output with optional hover info
+	elements := []string{
+		m.styles.Subtitle.Render(title),
+		header + grid,
+		m.styles.Muted.Render(cursorInfo),
+	}
+	if hoverInfo != "" {
+		elements = append(elements, hoverInfo)
+	}
+	elements = append(elements, legend, m.styles.Muted.Render(controls))
+
 	return m.styles.BoardArea.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			m.styles.Subtitle.Render(title),
-			header+grid,
-			m.styles.Muted.Render(cursorInfo),
-			legend,
-			m.styles.Muted.Render(controls),
-		),
+		lipgloss.JoinVertical(lipgloss.Left, elements...),
 	)
 }
 
@@ -1849,12 +2513,15 @@ func (m AppModel) renderServiceStatus() string {
 		}
 		bar := m.renderHealthBar(pct)
 
-		// truncate name to fit
+		// Affinity icon
+		affinityIcon := getAffinityIcon(svc.Affinity)
+
+		// truncate name to fit (account for icon)
 		name := svc.Name
-		if len(name) > 12 {
-			name = name[:12]
+		if len(name) > 10 {
+			name = name[:10]
 		}
-		status := fmt.Sprintf("%-12s %s", name, bar)
+		status := fmt.Sprintf("%s%-10s %s", affinityIcon, name, bar)
 		services += status + "\n"
 	}
 
@@ -1919,6 +2586,14 @@ func (m AppModel) renderServiceStatus() string {
 		}
 	}
 
+	// affinity legend
+	legendTitle := m.styles.Subtitle.Render("AFFINITY LEGEND")
+	legend := m.styles.Muted.Render("[!]=critical  [~]=spread\n[o]=preferred [-]=flexible")
+
+	// K8s status (only if real K8s is enabled)
+	k8sStatus := m.renderK8sStatus()
+	k8sEvents := m.renderK8sEvents()
+
 	return m.styles.Sidebar.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			serviceTitle, services,
@@ -1926,6 +2601,10 @@ func (m AppModel) renderServiceStatus() string {
 			eventTitle, events,
 			"",
 			statsTitle, m.styles.Muted.Render(stats),
+			"",
+			legendTitle, legend,
+			"",
+			k8sStatus, k8sEvents,
 		),
 	)
 }
@@ -2391,4 +3070,108 @@ func (m *AppModel) selectPrevService() {
 	}
 	m.selectedSvcID = m.playerCompany.Services[idx].ID
 	m.selectedService = m.playerCompany.Services[idx]
+}
+
+// getAffinityIcon returns an icon representing the affinity type
+func getAffinityIcon(affinity game.AffinityType) string {
+	switch affinity {
+	case game.AffinityHard:
+		return "[!]" // critical, can't reschedule
+	case game.AffinitySpread:
+		return "[~]" // distributed across racks
+	case game.AffinitySoft:
+		return "[o]" // preferred location
+	default:
+		return "[-]" // no preference, flexible
+	}
+}
+
+// getHoverInfo returns detailed info about what's at the cursor position
+func (m *AppModel) getHoverInfo() string {
+	if m.board == nil {
+		return ""
+	}
+
+	cellInfo := m.board.GetCellInfo(m.cursor[0], m.cursor[1], "player")
+
+	// Empty cell - no info to show
+	if cellInfo.Empty {
+		return ""
+	}
+
+	// Determine if this is player's own ship or enemy
+	isOwn := cellInfo.OwnerID == "player"
+
+	var info string
+	if isOwn {
+		// Full info for own ships
+		status := m.styles.Success.Render("ACTIVE")
+		if cellInfo.IsDestroyed {
+			status = m.styles.Error.Render("DESTROYED")
+		}
+
+		info = fmt.Sprintf("[YOUR SHIP] %s | Region: %s | Rack: %s | %s",
+			cellInfo.OwnerName, cellInfo.RegionName, cellInfo.RackID, status)
+
+		// Show services with affinity icons
+		if len(cellInfo.ServicesOnRack) > 0 {
+			info += "\n  Services: "
+			for i, svc := range cellInfo.ServicesOnRack {
+				icon := getAffinityIcon(svc.Affinity)
+				if i > 0 {
+					info += ", "
+				}
+				info += fmt.Sprintf("%s%s(%d)", icon, svc.ServiceName, svc.PodCount)
+			}
+		}
+	} else {
+		// Limited info for enemy ships (fog of war)
+		if m.debugMode || cellInfo.WasHit {
+			// Show more info if debug mode or we've hit it
+			status := m.styles.Success.Render("ACTIVE")
+			if cellInfo.IsDestroyed {
+				status = m.styles.Error.Render("DESTROYED")
+			}
+
+			// Critical warning for hard-affinity services
+			if cellInfo.HasCritical && !cellInfo.IsDestroyed {
+				status = m.styles.Error.Render("CRITICAL TARGET")
+			}
+
+			info = fmt.Sprintf("[ENEMY: %s] Region: %s | Rack: %s | %s",
+				cellInfo.OwnerName, cellInfo.RegionName, cellInfo.RackID, status)
+
+			// Show services with affinity if discovered
+			if cellInfo.WasHit && len(cellInfo.ServicesOnRack) > 0 {
+				info += "\n  Services: "
+				for i, svc := range cellInfo.ServicesOnRack {
+					icon := getAffinityIcon(svc.Affinity)
+					if i > 0 {
+						info += ", "
+					}
+					svcInfo := fmt.Sprintf("%s%s(%d/%d)", icon, svc.ServiceName, svc.RunningPods, svc.PodCount)
+					if svc.Affinity == game.AffinityHard {
+						svcInfo = m.styles.Error.Render(svcInfo + " CRITICAL!")
+					}
+					info += svcInfo
+				}
+			}
+
+			if cellInfo.CanAttack {
+				if cellInfo.HasCritical {
+					info += m.styles.Error.Render("\n  [FIRE to destroy critical service!]")
+				} else {
+					info += m.styles.Warning.Render(" [FIRE to attack!]")
+				}
+			} else if cellInfo.WasHit {
+				info += m.styles.Muted.Render(" [Already hit]")
+			}
+		} else {
+			// Unexplored enemy cell - show only that something is there
+			info = fmt.Sprintf("[ENEMY: %s] Unknown position - ", cellInfo.OwnerName)
+			info += m.styles.Warning.Render("FIRE to reveal!")
+		}
+	}
+
+	return info
 }

@@ -11,14 +11,14 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// LoadManifest reads and parses a k8s yaml file
+// LoadManifest reads and parses a Kubernetes YAML file
 func LoadManifest(path string) (*ServiceManifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %s: %w", path, err)
 	}
 
-	// first figure out what kind it is
+	// Parse metadata to determine resource kind
 	var meta struct {
 		Kind     string `json:"kind"`
 		Metadata struct {
@@ -43,7 +43,7 @@ func LoadManifest(path string) (*ServiceManifest, error) {
 		YAMLPath:  path,
 	}
 
-	// parse based on kind
+	// Extract details based on resource kind
 	switch meta.Kind {
 	case "Deployment":
 		var dep appsv1.Deployment
@@ -104,7 +104,7 @@ func extractContainers(containers []corev1.Container) []ContainerInfo {
 	return result
 }
 
-// LoadCompanyManifests loads all yaml files for a company
+// LoadCompanyManifests loads all YAML manifests for a company
 func LoadCompanyManifests(templatesDir, company string) ([]*ServiceManifest, error) {
 	dir := filepath.Join(templatesDir, "k8s", strings.ToLower(company))
 
@@ -122,7 +122,6 @@ func LoadCompanyManifests(templatesDir, company string) ([]*ServiceManifest, err
 		path := filepath.Join(dir, e.Name())
 		m, err := LoadManifest(path)
 		if err != nil {
-			// skip bad files with warning
 			fmt.Fprintf(os.Stderr, "warning: skipping %s: %v\n", path, err)
 			continue
 		}
@@ -132,9 +131,8 @@ func LoadCompanyManifests(templatesDir, company string) ([]*ServiceManifest, err
 	return manifests, nil
 }
 
-// GetTemplatesDir finds the templates directory
+// GetTemplatesDir finds the templates directory from common locations
 func GetTemplatesDir() string {
-	// check common locations
 	candidates := []string{
 		"templates",
 		"./templates",

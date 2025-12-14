@@ -6,6 +6,7 @@ metadata:
     app: clustership
     company: aws
     service: lambda-worker
+    tier: compute
 spec:
   replicas: 4
   selector:
@@ -15,14 +16,72 @@ spec:
   template:
     metadata:
       labels:
+        app: clustership
         company: aws
         service: lambda-worker
+        tier: compute
     spec:
       containers:
-      - name: worker
-        image: busybox
-        command: ["sh", "-c", "while true; do echo 'lambda running'; sleep 10; done"]
+      - name: lambda-runtime
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import time
+          import math
+          import random
+
+          print("Lambda worker started")
+          while True:
+              # Simulate serverless function execution
+              start = time.time()
+              result = 0
+              iterations = random.randint(50000, 150000)
+              for i in range(iterations):
+                  result += math.sqrt(i) * math.log(i + 1)
+
+              elapsed = time.time() - start
+              print(f"Function executed: {iterations} iterations in {elapsed:.3f}s")
+              time.sleep(random.uniform(0.2, 1.0))
         resources:
+          requests:
+            cpu: "350m"
+            memory: "256Mi"
           limits:
+            cpu: "500m"
+            memory: "512Mi"
+      - name: api-poller
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://aws-ec2-api:8080/api/lambda/invoke || true
+            sleep 2
+          done
+        resources:
+          requests:
             cpu: "25m"
             memory: "16Mi"
+          limits:
+            cpu: "50m"
+            memory: "32Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-lambda-worker
+  labels:
+    company: aws
+    service: lambda-worker
+spec:
+  selector:
+    company: aws
+    service: lambda-worker
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

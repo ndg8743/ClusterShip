@@ -12,9 +12,7 @@ import (
 )
 
 // DeployManifest deploys a service manifest to the cluster
-func (c *Client) DeployManifest(manifest *ServiceManifest) error {
-	ctx := context.Background()
-
+func (c *Client) DeployManifest(ctx context.Context, manifest *ServiceManifest) error {
 	switch manifest.Kind {
 	case "Deployment":
 		return c.deployDeployment(ctx, manifest)
@@ -54,7 +52,6 @@ func (c *Client) deployDeployment(ctx context.Context, manifest *ServiceManifest
 		return fmt.Errorf("failed to check deployment: %w", err)
 	}
 
-	// create new
 	_, err = client.Create(ctx, &dep, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to create deployment: %w", err)
@@ -105,7 +102,6 @@ func (c *Client) deployPod(ctx context.Context, manifest *ServiceManifest) error
 
 	client := c.clientset.CoreV1().Pods(c.namespace)
 
-	// pods cant be updated, delete and recreate
 	existing, err := client.Get(ctx, pod.Name, metav1.GetOptions{})
 	if err == nil {
 		err = client.Delete(ctx, existing.Name, metav1.DeleteOptions{})
@@ -123,11 +119,9 @@ func (c *Client) deployPod(ctx context.Context, manifest *ServiceManifest) error
 }
 
 // DeleteService removes all pods for a service
-func (c *Client) DeleteService(serviceID, company string) error {
-	ctx := context.Background()
+func (c *Client) DeleteService(ctx context.Context, serviceID, company string) error {
 	selector := fmt.Sprintf("app=clustership,service=%s,company=%s", serviceID, company)
 
-	// delete deployment if exists
 	deps, err := c.clientset.AppsV1().Deployments(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector,
 	})
@@ -137,7 +131,6 @@ func (c *Client) DeleteService(serviceID, company string) error {
 		}
 	}
 
-	// delete statefulsets
 	stss, err := c.clientset.AppsV1().StatefulSets(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector,
 	})
@@ -147,7 +140,6 @@ func (c *Client) DeleteService(serviceID, company string) error {
 		}
 	}
 
-	// delete pods directly
 	return c.clientset.CoreV1().Pods(c.namespace).DeleteCollection(
 		ctx,
 		metav1.DeleteOptions{},
@@ -156,9 +148,7 @@ func (c *Client) DeleteService(serviceID, company string) error {
 }
 
 // ScaleDeployment changes replica count for a deployment
-func (c *Client) ScaleDeployment(name string, replicas int32) error {
-	ctx := context.Background()
-
+func (c *Client) ScaleDeployment(ctx context.Context, name string, replicas int32) error {
 	dep, err := c.clientset.AppsV1().Deployments(c.namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get deployment: %w", err)
@@ -174,9 +164,7 @@ func (c *Client) ScaleDeployment(name string, replicas int32) error {
 }
 
 // GetDeploymentStatus returns deployment info
-func (c *Client) GetDeploymentStatus(name string) (*DeploymentInfo, error) {
-	ctx := context.Background()
-
+func (c *Client) GetDeploymentStatus(ctx context.Context, name string) (*DeploymentInfo, error) {
 	dep, err := c.clientset.AppsV1().Deployments(c.namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get deployment: %w", err)
