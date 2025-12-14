@@ -677,12 +677,10 @@ func TestGameFlowConfigValidation(t *testing.T) {
 func BenchmarkGameRender(b *testing.B) {
 	var m tea.Model = tui.NewAppModel()
 
-	// Get to battle state
-	keys := []string{"enter", "enter", "enter", "enter"}
-	for _, key := range keys {
-		msg := tea.KeyMsg{Type: tea.KeyEnter}
+	// Get to battle state (4 enters: New Game -> Select Player -> Enemy Count -> Select Enemy)
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	for range 4 {
 		m, _ = m.Update(msg)
-		_ = key // silence unused warning
 	}
 
 	// Benchmark rendering
@@ -696,20 +694,18 @@ func BenchmarkGameRender(b *testing.B) {
 func BenchmarkGameUpdate(b *testing.B) {
 	var m tea.Model = tui.NewAppModel()
 
-	// Get to battle state
-	keys := []string{"enter", "enter", "enter", "enter"}
-	for _, key := range keys {
-		msg := tea.KeyMsg{Type: tea.KeyEnter}
-		m, _ = m.Update(msg)
-		_ = key // silence unused warning
+	// Get to battle state (4 enters: New Game -> Select Player -> Enemy Count -> Select Enemy)
+	enterMsg := tea.KeyMsg{Type: tea.KeyEnter}
+	for range 4 {
+		m, _ = m.Update(enterMsg)
 	}
 
 	// Benchmark updates with cursor movement
-	msg := tea.KeyMsg{Type: tea.KeyRight}
+	moveMsg := tea.KeyMsg{Type: tea.KeyRight}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m, _ = m.Update(msg)
+		m, _ = m.Update(moveMsg)
 	}
 }
 

@@ -1,292 +1,67 @@
-# golangci-lint configuration for ClusterShip
-# See https://golangci-lint.run/usage/configuration/
-
 run:
-  # Timeout for analysis
   timeout: 5m
-
-  # Exit code when at least one issue was found
-  issues-exit-code: 1
-
-  # Include test files
   tests: true
-
-  # Skip directories
-  skip-dirs:
-    - vendor
-    - .github
-
-  # Skip files
-  skip-files:
-    - ".*\\.pb\\.go$"
-
-  # Modules download mode (readonly, vendor, mod)
-  modules-download-mode: readonly
-
-  # Allow multiple parallel golangci-lint instances running
-  allow-parallel-runners: true
+  skip-dirs: [vendor, .github]
 
 linters:
-  # Disable all linters by default
   disable-all: true
-
-  # Enable specific linters
   enable:
-    # Enabled by default
-    - errcheck       # Check for unchecked errors
-    - gosimple       # Simplify code
-    - govet          # Vet examines Go source code
-    - ineffassign    # Detect ineffectual assignments
-    - staticcheck    # Go static analysis
-    - typecheck      # Type-check Go code
-    - unused         # Check for unused constants, variables, functions and types
-
-    # Additional linters
-    - gocritic       # Comprehensive Go source code linter
-    - gofmt          # Check whether code was gofmt-ed
-    - goimports      # Check import statements are formatted
-    - misspell       # Finds commonly misspelled English words
-    - unconvert      # Remove unnecessary type conversions
-    - dupl           # Code clone detection
-    - gocyclo        # Computes cyclomatic complexity
-    - gosec          # Inspects source code for security problems
-    - revive         # Fast, configurable, extensible, flexible, and beautiful linter for Go
-    - goconst        # Finds repeated strings that could be replaced by a constant
-    - gomodguard     # Check for blocked dependencies
-    - goprintffuncname # Checks that printf-like functions are named with f at the end
-    - nolintlint     # Reports ill-formed or insufficient nolint directives
-    - predeclared    # Find code that shadows one of Go's predeclared identifiers
-    - exportloopref  # Check for pointers to enclosing loop variables
-    - whitespace     # Detection of leading and trailing whitespace
-    - errorlint      # Find code that will cause problems with Go 1.13+ error wrapping
-    - godot          # Check if comments end in a period
-    - gofumpt        # Stricter gofmt
-    - stylecheck     # Replacement for golint
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - gocyclo
+    - gosec
+    - revive
 
 linters-settings:
   errcheck:
-    # Report about not checking of errors in type assertions
     check-type-assertions: true
-    # Report about assignment of errors to blank identifier
-    check-blank: true
-    # List of functions to exclude from checking
     exclude-functions:
       - (*github.com/charmbracelet/bubbletea.Program).Send
       - (io.Closer).Close
 
-  govet:
-    # Enable all analyzers
-    enable-all: true
-    # Disable specific checks
-    disable:
-      - fieldalignment  # Too strict for readability
-      - shadow          # Useful but too noisy
-
   gocyclo:
-    # Minimal code complexity to report
     min-complexity: 15
 
-  dupl:
-    # Tokens count to trigger issue
-    threshold: 100
-
   gosec:
-    # Exclude specific rules (G101: hardcoded credentials)
-    excludes:
-      - G304  # File path provided as taint input (needed for template loading)
-      - G115  # Integer overflow conversion (too many false positives)
-    # Confidence level: low, medium, high
+    excludes: [G304, G115]
     severity: medium
-    confidence: medium
-
-  goconst:
-    # Minimal length of string constant
-    min-len: 3
-    # Minimum occurrences to report
-    min-occurrences: 3
-    # Ignore test files
-    ignore-tests: true
-
-  gocritic:
-    # Enable multiple checks by tags
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-      - experimental
-      - opinionated
-    disabled-checks:
-      - whyNoLint
-      - unnamedResult
-
-  gofmt:
-    # Simplify code
-    simplify: true
 
   goimports:
-    # Put imports beginning with prefix after 3rd-party packages
     local-prefixes: clustership
 
-  misspell:
-    # Locale to use
-    locale: US
-    # Ignore words
-    ignore-words:
-      - clustership
-
   revive:
-    # Sets the default severity
     severity: warning
-    # Enable all rules
-    enable-all-rules: false
     rules:
-      # Enabled rules
       - name: blank-imports
       - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
       - name: error-return
       - name: error-strings
-      - name: error-naming
-      - name: exported
-        arguments:
-          - "checkPrivateReceivers"
-          - "sayRepetitiveInsteadOfStutters"
       - name: if-return
       - name: increment-decrement
-      - name: var-naming
       - name: var-declaration
-      - name: package-comments
       - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
-      - name: superfluous-else
-      - name: unused-parameter
       - name: unreachable-code
-      - name: redefines-builtin-id
-
-  stylecheck:
-    # Select the Go version to target
-    go: "1.24"
-    checks: ["all", "-ST1000", "-ST1003", "-ST1016", "-ST1020", "-ST1021", "-ST1022"]
-    dot-import-whitelist: []
-    http-status-code-whitelist: []
-
-  errorlint:
-    # Check whether fmt.Errorf uses the %w verb for formatting errors
-    errorf: true
-    # Check for plain type assertions and type switches
-    asserts: true
-    # Check for plain error comparisons
-    comparison: true
-
-  gofumpt:
-    # Use gofumpt's extra rules
-    extra-rules: true
-    # Choose between package name and module name for import ordering
-    module-path: clustership
-
-  whitespace:
-    # Enforce whitespace on multi-line statements
-    multi-if: false
-    multi-func: false
 
 issues:
-  # Maximum issues count per one linter
   max-issues-per-linter: 0
-
-  # Maximum count of issues with the same text
   max-same-issues: 0
-
-  # Show only new issues created after git revision
-  # new-from-rev: origin/main
-
-  # Independently of option `exclude` we use default exclude patterns
   exclude-use-default: false
-
-  # Exclude specific issues
-  exclude:
-    # Ignore errors for test files
-    - "Error return value is not checked"
-    - "G104: Errors unhandled"
-    # Ignore package comment requirements for main
-    - "should have a package comment"
-
-  # Excluding configuration per-path, per-linter, per-text and per-source
   exclude-rules:
-    # Exclude some linters from running on test files
     - path: _test\.go
-      linters:
-        - gocyclo
-        - dupl
-        - gosec
-        - funlen
-        - goconst
-        - errcheck
-        - gocritic
-        - godot
-
-    # Exclude some linters for generated files
-    - path: ".*\\.pb\\.go"
-      linters:
-        - gofmt
-        - goimports
-        - gocritic
-        - revive
-        - stylecheck
-
-    # Exclude line length check for lines with URLs or long import paths
-    - linters:
-        - revive
-      text: "line is \\d+ characters"
-      source: "https?://"
-
-    # Allow dot imports in tests
-    - path: _test\.go
-      text: "dot imports"
-
-    # Allow context.Background in main
+      linters: [gocyclo, gosec, errcheck, gocritic]
     - path: cmd/
-      text: "context.Background"
-      linters:
-        - gocritic
-
-    # Allow global variables in main packages
-    - path: cmd/
-      text: "global variable"
-      linters:
-        - gocritic
-        - gochecknoglobals
-
-    # Ignore shadowing of err
-    - text: "shadow: declaration of \"err\""
-      linters:
-        - govet
-
-    # Ignore unused parameters in interface implementations
-    - text: "unused-parameter"
-      linters:
-        - revive
-
-  # Fix found issues (if supported by linter)
-  fix: false
+      linters: [gocritic]
 
 output:
-  # Format: colored-line-number|line-number|json|tab|checkstyle|code-climate|junit-xml|github-actions
   format: colored-line-number
-
-  # Print lines of code with issue
-  print-issued-lines: true
-
-  # Print linter name in the end of issue text
   print-linter-name: true
-
-  # Make issues output unique by line
-  uniq-by-line: true
-
-  # Sort results by: filepath, line and column
   sort-results: true

@@ -209,20 +209,9 @@ func NewAppModel() AppModel {
 		settingsItems: []string{"Board", "Ships", "Pods", "Bots", "Timing", "Kubernetes", "Save & Back"},
 		companies:     game.ListCompanies(),
 		cfg:           cfg,
-		viewW:         30, // viewport size
+		viewW:         30,
 		viewH:         20,
-		viewLevel:     ViewMap, // start at map view
-		battleLog:     make([]string, 0),
-		// Explicitly set game state to prevent carryover
-		demoMode:     false,
-		debugMode:    false,
-		isPlayerTurn: false,
-		animating:    false,
-		gameOver:     false,
-		playerAI:     nil,
-		ai:           nil,
-		ais:          nil,
-		board:        nil,
+		viewLevel:     ViewMap,
 	}
 }
 

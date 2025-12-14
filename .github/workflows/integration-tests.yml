@@ -2,224 +2,53 @@ name: Integration Tests
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main]
   pull_request:
-    branches: [ main, develop ]
-  workflow_dispatch: # Allow manual trigger
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  game-flow-tests:
+  game-flow:
     name: Game Flow Tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - run: go test -v -tags=integration ./tests/integration/ -run TestGameFlow -timeout=5m
+
+  k8s:
+    name: K8s Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: clustership-test
+          wait: 120s
+      - run: go test -v -tags=integration ./tests/integration/ -run TestK8s -timeout=15m
+      - if: always()
+        run: kind delete cluster --name clustership-test || true
+
+  benchmarks:
+    name: Benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.24'
           cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run game flow integration tests
-        run: |
-          go test -v -tags=integration ./tests/integration/ -run TestGameFlow -timeout=5m
-
-      - name: Run config validation tests
-        run: |
-          go test -v -tags=integration ./tests/integration/ -run TestGameFlowConfig -timeout=2m
-
-      - name: Run template loading tests
-        run: |
-          go test -v -tags=integration ./tests/integration/ -run TestGameFlowTemplate -timeout=2m
-
-  game-flow-benchmarks:
-    name: Game Flow Benchmarks
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run benchmarks
-        run: |
-          go test -tags=integration -bench=. -benchmem -run=^$$ ./tests/integration/... | tee bench.txt
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: bench.txt
-
-  k8s-integration-tests:
-    name: K8s Integration Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Install kind
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind version
-
-      - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x ./kubectl
-          sudo mv ./kubectl /usr/local/bin/kubectl
-          kubectl version --client
-
-      - name: Verify Docker
-        run: docker info
-
-      - name: Run K8s integration tests
-        run: |
-          go test -v -tags=integration ./tests/integration/ -run TestK8s -timeout=20m
-        env:
-          # Don't keep cluster after tests in CI
-          KEEP_KIND_CLUSTER: "false"
-
-      - name: Cleanup kind cluster
-        if: always()
-        run: |
-          kind delete cluster --name clustership-test || true
-
-  integration-coverage:
-    name: Integration Test Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [game-flow-tests, k8s-integration-tests]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Install kind
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-
-      - name: Run integration tests with coverage
-        run: |
-          go test -v -tags=integration -coverprofile=integration-coverage.out -covermode=atomic ./tests/integration/... -timeout=20m
-
-      - name: Generate coverage report
-        run: |
-          go tool cover -func=integration-coverage.out > integration-coverage.txt
-          go tool cover -html=integration-coverage.out -o integration-coverage.html
-
-      - name: Upload coverage artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-coverage
-          path: |
-            integration-coverage.out
-            integration-coverage.txt
-            integration-coverage.html
-
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./integration-coverage.out
-          flags: integration
-          name: integration-tests
-
-      - name: Cleanup kind cluster
-        if: always()
-        run: |
-          kind delete cluster --name clustership-test || true
-
-  integration-tests-windows:
-    name: Integration Tests (Windows)
-    runs-on: windows-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run game flow tests (Windows)
-        run: |
-          go test -v -tags=integration ./tests/integration/ -run TestGameFlow -timeout=5m
-        env:
-          # Skip K8s tests on Windows (kind requires WSL2/Docker Desktop)
-          SKIP_KIND_TESTS: "true"
-
-  integration-tests-macos:
-    name: Integration Tests (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run game flow tests (macOS)
-        run: |
-          go test -v -tags=integration ./tests/integration/ -run TestGameFlow -timeout=5m
-
-      # Optional: Install kind on macOS and run K8s tests
-      # Commented out to save CI minutes
-      # - name: Install kind (macOS)
-      #   run: brew install kind
-      #
-      # - name: Run K8s tests (macOS)
-      #   run: |
-      #     go test -v -tags=integration ./tests/integration/ -run TestK8s -timeout=15m
+      - run: go test -tags=integration -bench=. -benchmem -run=^$$ ./tests/integration/...
