@@ -1,0 +1,153 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steam-store
+  labels:
+    app: clustership
+    company: steam
+    service: store
+    tier: frontend
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      company: steam
+      service: store
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: steam
+        service: store
+        tier: frontend
+    spec:
+      containers:
+      # Store frontend - nginx with game catalog
+      - name: store-frontend
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        volumeMounts:
+        - name: store-content
+          mountPath: /usr/share/nginx/html
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Store API backend
+      - name: store-api
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import random
+
+          GAMES = [
+            {'id': 1, 'name': 'Counter-Strike 2', 'price': 0},
+            {'id': 2, 'name': 'Dota 2', 'price': 0},
+            {'id': 3, 'name': 'Half-Life 3', 'price': 59.99},
+            {'id': 4, 'name': 'Portal 3', 'price': 39.99},
+          ]
+
+          class StoreHandler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'featured': random.sample(GAMES, 2),
+                      'on_sale': random.choice(GAMES),
+                      'player_count': random.randint(20000000, 35000000)
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), StoreHandler)
+          print('Steam Store API on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: api
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Traffic simulation
+      - name: traffic-gen
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://localhost:80/ > /dev/null 2>&1 || true
+            curl -s http://steam-auth:8080/validate > /dev/null 2>&1 || true
+            sleep 0.1
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+
+      volumes:
+      - name: store-content
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: steam-store
+  labels:
+    app: clustership
+    company: steam
+    service: store
+spec:
+  selector:
+    company: steam
+    service: store
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  - port: 8080
+    targetPort: 8080
+    name: api
+  type: ClusterIP

@@ -1,0 +1,97 @@
+{
+  "id": "spotify",
+  "name": "Spotify",
+  "emoji": "",
+  "description": "Music streaming platform with personalization",
+  "regions": [
+    {
+      "id": "eu-north-1",
+      "name": "Stockholm",
+      "emoji": "",
+      "racks": 5,
+      "latency_ms": 10
+    },
+    {
+      "id": "us-east-1",
+      "name": "Virginia",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 25
+    },
+    {
+      "id": "us-west-2",
+      "name": "Oregon",
+      "emoji": "",
+      "racks": 3,
+      "latency_ms": 30
+    },
+    {
+      "id": "ap-southeast-1",
+      "name": "Singapore",
+      "emoji": "",
+      "racks": 3,
+      "latency_ms": 120
+    },
+    {
+      "id": "sa-east-1",
+      "name": "Sao Paulo",
+      "emoji": "",
+      "racks": 2,
+      "latency_ms": 150
+    }
+  ],
+  "services": [
+    {
+      "id": "audio-cdn",
+      "name": "Audio CDN",
+      "emoji": "",
+      "replicas": 6,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "latency-critical",
+      "can_failover": true
+    },
+    {
+      "id": "playback-api",
+      "name": "Playback API",
+      "emoji": "",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "discovery",
+      "name": "Music Discovery",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "compute",
+      "can_failover": true
+    },
+    {
+      "id": "catalog-db",
+      "name": "Music Catalog DB",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "recommendations",
+      "name": "Recommendations ML",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "none",
+      "criticality": "compute",
+      "can_failover": true
+    }
+  ],
+  "ai_strategy": "hunter",
+  "difficulty": "medium"
+}

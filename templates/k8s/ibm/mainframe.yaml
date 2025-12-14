@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ibm-mainframe
+  labels:
+    app: clustership
+    company: ibm
+    service: mainframe
+    tier: core
+spec:
+  serviceName: ibm-mainframe
+  replicas: 2
+  selector:
+    matchLabels:
+      company: ibm
+      service: mainframe
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: ibm
+        service: mainframe
+        tier: core
+    spec:
+      containers:
+      # z/OS mainframe simulation - COBOL batch processor
+      - name: zos-emulator
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import time
+          import random
+
+          # Simulated batch job queue
+          jobs = []
+          job_counter = 0
+
+          class MainframeHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  global job_counter
+                  job_counter += 1
+
+                  # Simulate batch job submission
+                  job = {
+                      'job_id': f'JOB{job_counter:05d}',
+                      'status': 'EXECUTING',
+                      'class': random.choice(['A', 'B', 'C']),
+                      'priority': random.randint(1, 15),
+                      'cpu_time': 0
+                  }
+                  jobs.append(job)
+
+                  # Simulate processing
+                  time.sleep(random.uniform(0.01, 0.05))
+                  job['status'] = 'COMPLETED'
+                  job['cpu_time'] = random.uniform(0.1, 2.0)
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'result': 'CC 0000',
+                      'job': job,
+                      'sysout': f'//{job["job_id"]} JOB COMPLETED'
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'system': 'z/OS 2.5',
+                      'lpar': 'PROD1',
+                      'sysplex': 'CLUSTERSHIP',
+                      'active_jobs': len([j for j in jobs[-100:] if j['status'] == 'EXECUTING']),
+                      'completed_jobs': job_counter,
+                      'cpu_utilization': random.uniform(60, 95)
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), MainframeHandler)
+          print('z/OS Mainframe on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "400m"
+            memory: "512Mi"
+          limits:
+            cpu: "800m"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /status
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /status
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        volumeMounts:
+        - name: dasd
+          mountPath: /dasd
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Heavy batch processing stress
+      - name: batch-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "2"
+        - "--cpu-method"
+        - "int64"
+        - "--io"
+        - "1"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "256Mi"
+          limits:
+            cpu: "600m"
+            memory: "512Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      volumes:
+      - name: dasd
+        emptyDir:
+          sizeLimit: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ibm-mainframe
+  labels:
+    app: clustership
+    company: ibm
+    service: mainframe
+spec:
+  selector:
+    company: ibm
+    service: mainframe
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP
+  clusterIP: None

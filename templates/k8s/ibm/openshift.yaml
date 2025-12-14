@@ -1,0 +1,156 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ibm-openshift
+  labels:
+    app: clustership
+    company: ibm
+    service: openshift
+    tier: platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: ibm
+      service: openshift
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: ibm
+        service: openshift
+        tier: platform
+    spec:
+      containers:
+      # OpenShift API server simulation
+      - name: ocp-api
+        image: golang:1.22-alpine
+        command:
+        - sh
+        - -c
+        - |
+          cat > /tmp/main.go << 'GOCODE'
+          package main
+          import (
+            "encoding/json"
+            "fmt"
+            "net/http"
+            "time"
+          )
+          type ClusterInfo struct {
+            Version    string `json:"openshiftVersion"`
+            Kubernetes string `json:"kubernetesVersion"`
+            Platform   string `json:"platform"`
+            Status     string `json:"status"`
+            Nodes      int    `json:"nodeCount"`
+          }
+          func main() {
+            http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+              time.Sleep(10 * time.Millisecond)
+              info := ClusterInfo{
+                Version:    "4.14.8",
+                Kubernetes: "1.27.8",
+                Platform:   "IBM Cloud",
+                Status:     "Available",
+                Nodes:      5,
+              }
+              w.Header().Set("Content-Type", "application/json")
+              json.NewEncoder(w).Encode(info)
+            })
+            fmt.Println("OpenShift API running on port 8080")
+            http.ListenAndServe(":8080", nil)
+          }
+          GOCODE
+          go run /tmp/main.go
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "400m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # etcd for cluster state
+      - name: etcd
+        image: bitnami/etcd:3.5
+        env:
+        - name: ALLOW_NONE_AUTHENTICATION
+          value: "yes"
+        - name: ETCD_ADVERTISE_CLIENT_URLS
+          value: "http://localhost:2379"
+        - name: ETCD_LISTEN_CLIENT_URLS
+          value: "http://0.0.0.0:2379"
+        ports:
+        - containerPort: 2379
+          name: client
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Controller manager stress
+      - name: controller-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "loop"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "64Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ibm-openshift
+  labels:
+    app: clustership
+    company: ibm
+    service: openshift
+spec:
+  selector:
+    company: ibm
+    service: openshift
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 2379
+    targetPort: 2379
+    name: etcd
+  type: ClusterIP

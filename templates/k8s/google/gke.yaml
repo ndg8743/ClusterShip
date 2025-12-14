@@ -1,0 +1,162 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: google-gke
+  labels:
+    app: clustership
+    company: google
+    service: gke
+    tier: control-plane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: google
+      service: gke
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: google
+        service: gke
+        tier: control-plane
+    spec:
+      containers:
+      # GKE control plane API
+      - name: gke-api
+        image: golang:1.22-alpine
+        command:
+        - sh
+        - -c
+        - |
+          cat > /tmp/main.go << 'GOCODE'
+          package main
+          import (
+            "encoding/json"
+            "fmt"
+            "net/http"
+            "time"
+          )
+          type GKECluster struct {
+            Name              string   `json:"name"`
+            Zone              string   `json:"zone"`
+            Status            string   `json:"status"`
+            NodeVersion       string   `json:"currentNodeVersion"`
+            MasterVersion     string   `json:"currentMasterVersion"`
+            NodeCount         int      `json:"currentNodeCount"`
+            Autopilot         bool     `json:"autopilot"`
+            ReleaseChannel    string   `json:"releaseChannel"`
+          }
+          func main() {
+            http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+              time.Sleep(10 * time.Millisecond)
+              cluster := GKECluster{
+                Name:           "clustership-gke",
+                Zone:           "us-central1-a",
+                Status:         "RUNNING",
+                NodeVersion:    "1.28.5-gke.1200",
+                MasterVersion:  "1.28.5-gke.1200",
+                NodeCount:      3,
+                Autopilot:      false,
+                ReleaseChannel: "REGULAR",
+              }
+              w.Header().Set("Content-Type", "application/json")
+              json.NewEncoder(w).Encode(cluster)
+            })
+            fmt.Println("GKE API running on port 8080")
+            http.ListenAndServe(":8080", nil)
+          }
+          GOCODE
+          go run /tmp/main.go
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "400m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # etcd for cluster state
+      - name: etcd
+        image: bitnami/etcd:3.5
+        env:
+        - name: ALLOW_NONE_AUTHENTICATION
+          value: "yes"
+        - name: ETCD_ADVERTISE_CLIENT_URLS
+          value: "http://localhost:2379"
+        - name: ETCD_LISTEN_CLIENT_URLS
+          value: "http://0.0.0.0:2379"
+        ports:
+        - containerPort: 2379
+          name: client
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Controller manager stress
+      - name: controller-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "loop"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "64Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: google-gke
+  labels:
+    app: clustership
+    company: google
+    service: gke
+spec:
+  selector:
+    company: google
+    service: gke
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 2379
+    targetPort: 2379
+    name: etcd
+  type: ClusterIP

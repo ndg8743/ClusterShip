@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spotify-discovery
+  labels:
+    app: clustership
+    company: spotify
+    service: discovery
+    workload-type: compute
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: spotify
+      service: discovery
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: spotify
+        service: discovery
+        workload-type: compute
+    spec:
+      containers:
+      - name: discovery
+        image: python:3.11-slim
+        command: ["python", "-m", "http.server", "8000"]
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+      - name: index
+        image: redis:7-alpine
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+
+      - name: compute
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "1", "--cpu-method", "correlate", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "750m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spotify-discovery
+  labels:
+    app: clustership
+    company: spotify
+    service: discovery
+spec:
+  selector:
+    company: spotify
+    service: discovery
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  type: ClusterIP

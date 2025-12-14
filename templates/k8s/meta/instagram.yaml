@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meta-instagram
+  labels:
+    app: clustership
+    company: meta
+    service: instagram
+    workload-type: cpu-memory
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: meta
+      service: instagram
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: meta
+        service: instagram
+        workload-type: cpu-memory
+    spec:
+      containers:
+      - name: web
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+
+      - name: image-proc
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--vm", "1", "--vm-bytes", "128M", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "384Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+
+      - name: cache
+        image: redis:7-alpine
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "250m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meta-instagram
+  labels:
+    app: clustership
+    company: meta
+    service: instagram
+spec:
+  selector:
+    company: meta
+    service: instagram
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  type: ClusterIP

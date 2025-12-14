@@ -1,0 +1,188 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ibm-mq
+  labels:
+    app: clustership
+    company: ibm
+    service: mq
+    tier: messaging
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: ibm
+      service: mq
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: ibm
+        service: mq
+        tier: messaging
+    spec:
+      containers:
+      # MQ simulation using RabbitMQ
+      - name: rabbitmq
+        image: rabbitmq:3.12-alpine
+        ports:
+        - containerPort: 5672
+          name: amqp
+        - containerPort: 15672
+          name: management
+        env:
+        - name: RABBITMQ_DEFAULT_USER
+          value: "mqm"
+        - name: RABBITMQ_DEFAULT_PASS
+          value: "clustership"
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "400m"
+            memory: "512Mi"
+        livenessProbe:
+          exec:
+            command:
+            - rabbitmq-diagnostics
+            - -q
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          exec:
+            command:
+            - rabbitmq-diagnostics
+            - -q
+            - check_running
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # MQ API wrapper
+      - name: mq-api
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import random
+          import time
+
+          # Simulated queue stats
+          queues = {
+              'DEV.QUEUE.1': {'depth': 0, 'input_count': 0, 'output_count': 0},
+              'DEV.QUEUE.2': {'depth': 0, 'input_count': 0, 'output_count': 0},
+              'SYSTEM.DEFAULT.LOCAL.QUEUE': {'depth': 0, 'input_count': 0, 'output_count': 0}
+          }
+
+          class MQHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  # Simulate message put
+                  queue = random.choice(list(queues.keys()))
+                  queues[queue]['depth'] += 1
+                  queues[queue]['input_count'] += 1
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'result': 'MQCC_OK',
+                      'reason': 'MQRC_NONE',
+                      'queue': queue,
+                      'message_id': f'AMQ{random.randint(100000, 999999)}'
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def do_GET(self):
+                  # Simulate message get
+                  queue = random.choice(list(queues.keys()))
+                  if queues[queue]['depth'] > 0:
+                      queues[queue]['depth'] -= 1
+                      queues[queue]['output_count'] += 1
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'queue_manager': 'QM1',
+                      'version': '9.3.4',
+                      'queues': queues,
+                      'channels': {
+                          'SYSTEM.DEF.SVRCONN': 'RUNNING',
+                          'TO.QM2': 'RUNNING'
+                      }
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), MQHandler)
+          print('IBM MQ API on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Message producer simulation
+      - name: message-producer
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s -X POST http://localhost:8080/put \
+              -H "Content-Type: application/json" \
+              -d '{"message":"test payload"}' > /dev/null 2>&1 || true
+            curl -s http://localhost:8080/get > /dev/null 2>&1 || true
+            sleep 0.1
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ibm-mq
+  labels:
+    app: clustership
+    company: ibm
+    service: mq
+spec:
+  selector:
+    company: ibm
+    service: mq
+  ports:
+  - port: 5672
+    targetPort: 5672
+    name: amqp
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

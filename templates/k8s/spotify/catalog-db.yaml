@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spotify-catalog-db
+  labels:
+    app: clustership
+    company: spotify
+    service: catalog-db
+    workload-type: database
+spec:
+  serviceName: spotify-catalog-db
+  replicas: 2
+  selector:
+    matchLabels:
+      company: spotify
+      service: catalog-db
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: spotify
+        service: catalog-db
+        workload-type: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "clustership"
+        - name: POSTGRES_DB
+          value: "catalog"
+        ports:
+        - containerPort: 5432
+          name: postgres
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 10
+          periodSeconds: 10
+
+      - name: stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--hdd", "1", "--hdd-bytes", "64M", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spotify-catalog-db
+  labels:
+    app: clustership
+    company: spotify
+    service: catalog-db
+spec:
+  selector:
+    company: spotify
+    service: catalog-db
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  type: ClusterIP

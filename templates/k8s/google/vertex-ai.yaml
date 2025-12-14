@@ -1,0 +1,182 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: google-vertex-ai
+  labels:
+    app: clustership
+    company: google
+    service: vertex-ai
+    tier: ai
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: google
+      service: vertex-ai
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: google
+        service: vertex-ai
+        tier: ai
+    spec:
+      containers:
+      # Vertex AI prediction service
+      - name: vertex-api
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import random
+          import time
+          import math
+
+          def simulate_prediction():
+              # Simulate ML inference
+              result = 0
+              for i in range(3000):
+                  result += math.sin(i * 0.001) * math.exp(-i * 0.0001)
+              return result
+
+          class VertexHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  content_length = int(self.headers.get('Content-Length', 0))
+                  body = self.rfile.read(content_length) if content_length else b'{}'
+
+                  start = time.time()
+                  result = simulate_prediction()
+                  latency = (time.time() - start) * 1000
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'predictions': [
+                          {'output': random.uniform(0, 1), 'confidence': random.uniform(0.8, 0.99)}
+                          for _ in range(random.randint(1, 5))
+                      ],
+                      'deployed_model_id': 'vertex-model-001',
+                      'model_version': '1.0.0',
+                      'prediction_latency_ms': latency
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'status': 'DEPLOYED',
+                      'endpoint': 'projects/clustership/locations/us-central1/endpoints/vertex-001',
+                      'models': ['gemini-pro', 'text-bison', 'imagen'],
+                      'traffic_split': {'vertex-model-001': 100},
+                      'replica_count': 3
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), VertexHandler)
+          print('Vertex AI on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "384Mi"
+          limits:
+            cpu: "600m"
+            memory: "768Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # ML inference stress (TPU/GPU simulation)
+      - name: ml-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "matrixprod"
+        - "--matrix"
+        - "1"
+        - "--matrix-size"
+        - "128"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "400m"
+            memory: "512Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Prediction traffic simulation
+      - name: predict-sim
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s -X POST http://localhost:8080/predict \
+              -H "Content-Type: application/json" \
+              -d '{"instances":[{"features":[1,2,3,4,5]}]}' > /dev/null 2>&1 || true
+            curl -s http://google-bigquery:8080/status > /dev/null 2>&1 || true
+            sleep 0.2
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: google-vertex-ai
+  labels:
+    app: clustership
+    company: google
+    service: vertex-ai
+spec:
+  selector:
+    company: google
+    service: vertex-ai
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

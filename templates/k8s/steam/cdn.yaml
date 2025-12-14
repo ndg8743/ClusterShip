@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steam-cdn
+  labels:
+    app: clustership
+    company: steam
+    service: cdn
+    tier: edge
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      company: steam
+      service: cdn
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: steam
+        service: cdn
+        tier: edge
+    spec:
+      containers:
+      # CDN for game downloads - nginx with large file serving
+      - name: cdn-server
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        volumeMounts:
+        - name: game-cache
+          mountPath: /usr/share/nginx/html
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # High bandwidth stress simulation (game downloads)
+      - name: bandwidth-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--io"
+        - "1"
+        - "--hdd"
+        - "1"
+        - "--hdd-bytes"
+        - "64M"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Redis for caching download metadata
+      - name: cache
+        image: redis:7-alpine
+        command: ["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "150m"
+            memory: "128Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      volumes:
+      - name: game-cache
+        emptyDir:
+          sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: steam-cdn
+  labels:
+    app: clustership
+    company: steam
+    service: cdn
+spec:
+  selector:
+    company: steam
+    service: cdn
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP

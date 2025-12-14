@@ -1,0 +1,97 @@
+{
+  "id": "steam",
+  "name": "Steam",
+  "emoji": "",
+  "description": "Gaming platform with global content delivery",
+  "regions": [
+    {
+      "id": "us-west",
+      "name": "Seattle",
+      "emoji": "",
+      "racks": 5,
+      "latency_ms": 15
+    },
+    {
+      "id": "us-east",
+      "name": "Chicago",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 25
+    },
+    {
+      "id": "eu-west",
+      "name": "Amsterdam",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 80
+    },
+    {
+      "id": "asia-east",
+      "name": "Singapore",
+      "emoji": "",
+      "racks": 3,
+      "latency_ms": 160
+    },
+    {
+      "id": "oceania",
+      "name": "Sydney",
+      "emoji": "",
+      "racks": 2,
+      "latency_ms": 180
+    }
+  ],
+  "services": [
+    {
+      "id": "store",
+      "name": "Store Frontend",
+      "emoji": "",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "critical",
+      "can_failover": true
+    },
+    {
+      "id": "cdn",
+      "name": "Game Downloads CDN",
+      "emoji": "",
+      "replicas": 5,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "matchmaking",
+      "name": "Matchmaking Service",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "auth",
+      "name": "Steam Guard Auth",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "workshop",
+      "name": "Workshop Mods",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "none",
+      "criticality": "low",
+      "can_failover": true
+    }
+  ],
+  "ai_strategy": "hunter",
+  "difficulty": "medium"
+}

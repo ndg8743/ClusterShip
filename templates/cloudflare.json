@@ -1,0 +1,97 @@
+{
+  "id": "cloudflare",
+  "name": "Cloudflare",
+  "emoji": "",
+  "description": "Global CDN and edge computing network",
+  "regions": [
+    {
+      "id": "us-east-1",
+      "name": "Ashburn",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 5
+    },
+    {
+      "id": "us-west-1",
+      "name": "San Jose",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 8
+    },
+    {
+      "id": "eu-central-1",
+      "name": "Frankfurt",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 12
+    },
+    {
+      "id": "ap-northeast-1",
+      "name": "Tokyo",
+      "emoji": "",
+      "racks": 3,
+      "latency_ms": 15
+    },
+    {
+      "id": "ap-south-1",
+      "name": "Mumbai",
+      "emoji": "",
+      "racks": 2,
+      "latency_ms": 20
+    }
+  ],
+  "services": [
+    {
+      "id": "edge-proxy",
+      "name": "Edge Proxy",
+      "emoji": "",
+      "replicas": 10,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "latency-critical",
+      "can_failover": true
+    },
+    {
+      "id": "dns",
+      "name": "DNS Resolver",
+      "emoji": "",
+      "replicas": 6,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "network",
+      "can_failover": true
+    },
+    {
+      "id": "workers",
+      "name": "Edge Workers",
+      "emoji": "",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "compute",
+      "can_failover": true
+    },
+    {
+      "id": "waf",
+      "name": "Web App Firewall",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "kv-store",
+      "name": "KV Storage",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    }
+  ],
+  "ai_strategy": "defensive",
+  "difficulty": "hard"
+}

@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microsoft-teams
+  labels:
+    app: clustership
+    company: microsoft
+    service: teams
+    tier: collaboration
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      company: microsoft
+      service: teams
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: microsoft
+        service: teams
+        tier: collaboration
+    spec:
+      containers:
+      # Teams backend - Node.js WebSocket simulation
+      - name: teams-backend
+        image: node:18-alpine
+        command:
+        - node
+        - -e
+        - |
+          const http = require('http');
+          const crypto = require('crypto');
+
+          const server = http.createServer((req, res) => {
+            // Simulate real-time messaging workload
+            const messages = [];
+            for (let i = 0; i < 100; i++) {
+              messages.push({
+                id: crypto.randomUUID(),
+                content: crypto.randomBytes(128).toString('hex'),
+                timestamp: Date.now()
+              });
+            }
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({channel: 'general', messages: messages.length}));
+          });
+
+          server.listen(8080, () => console.log('Teams backend on port 8080'));
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Redis for real-time message pub/sub
+      - name: redis-pubsub
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Traffic generator for message simulation
+      - name: message-sim
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://localhost:8080/messages > /dev/null 2>&1 || true
+            curl -s http://microsoft-azure-ad:8080/token > /dev/null 2>&1 || true
+            sleep 0.2
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microsoft-teams
+  labels:
+    app: clustership
+    company: microsoft
+    service: teams
+spec:
+  selector:
+    company: microsoft
+    service: teams
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP

@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meta-feed-api
+  labels:
+    app: clustership
+    company: meta
+    service: feed-api
+    workload-type: cpu-network
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      company: meta
+      service: feed-api
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: meta
+        service: feed-api
+        workload-type: cpu-network
+    spec:
+      containers:
+      - name: api
+        image: python:3.11-slim
+        command: ["python", "-m", "http.server", "8080"]
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5
+
+      - name: cache
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+
+      - name: stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "1", "--cpu-method", "matrixprod", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meta-feed-api
+  labels:
+    app: clustership
+    company: meta
+    service: feed-api
+spec:
+  selector:
+    company: meta
+    service: feed-api
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steam-matchmaking
+  labels:
+    app: clustership
+    company: steam
+    service: matchmaking
+    tier: gaming
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: steam
+      service: matchmaking
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: steam
+        service: matchmaking
+        tier: gaming
+    spec:
+      containers:
+      # Matchmaking service - Node.js for real-time matching
+      - name: matchmaker
+        image: node:18-alpine
+        command:
+        - node
+        - -e
+        - |
+          const http = require('http');
+          const crypto = require('crypto');
+
+          // Simulate player queue
+          let queue = [];
+
+          const server = http.createServer((req, res) => {
+            // Simulate matchmaking algorithm
+            const playerId = crypto.randomUUID();
+            queue.push({id: playerId, skill: Math.random() * 3000, timestamp: Date.now()});
+
+            // Match players with similar skill
+            if (queue.length >= 10) {
+              queue.sort((a, b) => a.skill - b.skill);
+              const match = queue.splice(0, 10);
+              res.writeHead(200, {'Content-Type': 'application/json'});
+              res.end(JSON.stringify({
+                matchId: crypto.randomUUID(),
+                players: match.length,
+                avgSkill: match.reduce((s, p) => s + p.skill, 0) / match.length,
+                server: 'us-west-' + Math.floor(Math.random() * 5)
+              }));
+            } else {
+              res.writeHead(200, {'Content-Type': 'application/json'});
+              res.end(JSON.stringify({status: 'queued', position: queue.length, playerId}));
+            }
+          });
+
+          server.listen(8080, () => console.log('Matchmaking on port 8080'));
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Redis for player queue state
+      - name: queue-redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Simulate player traffic
+      - name: player-sim
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://localhost:8080/queue > /dev/null 2>&1 || true
+            curl -s http://steam-auth:8080/validate > /dev/null 2>&1 || true
+            sleep 0.05
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: steam-matchmaking
+  labels:
+    app: clustership
+    company: steam
+    service: matchmaking
+spec:
+  selector:
+    company: steam
+    service: matchmaking
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP

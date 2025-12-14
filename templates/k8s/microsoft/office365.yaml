@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microsoft-office365
+  labels:
+    app: clustership
+    company: microsoft
+    service: office365
+    tier: productivity
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      company: microsoft
+      service: office365
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: microsoft
+        service: office365
+        tier: productivity
+    spec:
+      containers:
+      # Office document processing - nginx serving content
+      - name: document-server
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        volumeMounts:
+        - name: documents
+          mountPath: /usr/share/nginx/html
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Document processing stress (Excel/Word rendering)
+      - name: render-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "double"
+        - "--vm"
+        - "1"
+        - "--vm-bytes"
+        - "64M"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "400m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Auth client for AD integration
+      - name: auth-client
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s http://microsoft-azure-ad:8080/token > /dev/null 2>&1 || true
+            curl -s http://microsoft-cosmos-db:8080/documents > /dev/null 2>&1 || true
+            sleep 0.5
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+
+      volumes:
+      - name: documents
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microsoft-office365
+  labels:
+    app: clustership
+    company: microsoft
+    service: office365
+spec:
+  selector:
+    company: microsoft
+    service: office365
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  type: ClusterIP

@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflare-waf
+  labels:
+    app: clustership
+    company: cloudflare
+    service: waf
+    workload-type: security
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: cloudflare
+      service: waf
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: cloudflare
+        service: waf
+        workload-type: security
+    spec:
+      containers:
+      - name: waf
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5
+
+      - name: rules-engine
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "1", "--cpu-method", "queens", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "750m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflare-waf
+  labels:
+    app: clustership
+    company: cloudflare
+    service: waf
+spec:
+  selector:
+    company: cloudflare
+    service: waf
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

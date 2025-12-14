@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: meta-graph-db
+  labels:
+    app: clustership
+    company: meta
+    service: graph-db
+    workload-type: database
+spec:
+  serviceName: meta-graph-db
+  replicas: 2
+  selector:
+    matchLabels:
+      company: meta
+      service: graph-db
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: meta
+        service: graph-db
+        workload-type: database
+    spec:
+      containers:
+      - name: neo4j
+        image: python:3.11-slim
+        command: ["python", "-m", "http.server", "7474"]
+        ports:
+        - containerPort: 7474
+          name: http
+        - containerPort: 7687
+          name: bolt
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 7474
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 7474
+          initialDelaySeconds: 15
+          periodSeconds: 10
+
+      - name: stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "2", "--vm", "1", "--vm-bytes", "256M", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "384Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meta-graph-db
+  labels:
+    app: clustership
+    company: meta
+    service: graph-db
+spec:
+  selector:
+    company: meta
+    service: graph-db
+  ports:
+  - port: 7474
+    targetPort: 7474
+    name: http
+  - port: 7687
+    targetPort: 7687
+    name: bolt
+  type: ClusterIP

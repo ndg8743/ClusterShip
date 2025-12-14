@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spotify-recommendations
+  labels:
+    app: clustership
+    company: spotify
+    service: recommendations
+    workload-type: compute
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: spotify
+      service: recommendations
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: spotify
+        service: recommendations
+        workload-type: compute
+    spec:
+      containers:
+      - name: ml
+        image: python:3.11-slim
+        command: ["python", "-m", "http.server", "8080"]
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "512Mi"
+          limits:
+            cpu: "1500m"
+            memory: "1Gi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+
+      - name: compute
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "2", "--cpu-method", "matrixprod", "--matrix", "1", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+
+      - name: feature-store
+        image: redis:7-alpine
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "250m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spotify-recommendations
+  labels:
+    app: clustership
+    company: spotify
+    service: recommendations
+spec:
+  selector:
+    company: spotify
+    service: recommendations
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

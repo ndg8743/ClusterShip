@@ -1,0 +1,182 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: google-bigquery
+  labels:
+    app: clustership
+    company: google
+    service: bigquery
+    tier: analytics
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: google
+      service: bigquery
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: google
+        service: bigquery
+        tier: analytics
+    spec:
+      containers:
+      # BigQuery query engine simulation
+      - name: query-engine
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import random
+          import time
+          import uuid
+
+          class BigQueryHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  content_length = int(self.headers.get('Content-Length', 0))
+                  body = self.rfile.read(content_length) if content_length else b'{}'
+
+                  # Simulate query execution
+                  start = time.time()
+                  rows_processed = random.randint(1000000, 100000000000)
+
+                  # Simulate processing delay based on data size
+                  time.sleep(random.uniform(0.05, 0.2))
+
+                  query_time = (time.time() - start) * 1000
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'job_id': f'bqjob_{uuid.uuid4().hex[:16]}',
+                      'status': 'DONE',
+                      'statistics': {
+                          'query': {
+                              'totalBytesBilled': rows_processed * 8,
+                              'totalBytesProcessed': rows_processed * 8,
+                              'cacheHit': random.choice([True, False]),
+                              'totalSlotMs': random.randint(1000, 50000)
+                          }
+                      },
+                      'execution_time_ms': query_time,
+                      'rows_returned': min(1000, rows_processed)
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'status': 'available',
+                      'slots_available': random.randint(500, 2000),
+                      'active_jobs': random.randint(0, 50),
+                      'datasets': ['clustership', 'public_data', 'analytics']
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), BigQueryHandler)
+          print('BigQuery on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "384Mi"
+          limits:
+            cpu: "600m"
+            memory: "768Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Query processing stress (columnar scan simulation)
+      - name: scan-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "int64"
+        - "--stream"
+        - "1"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "400m"
+            memory: "512Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Query traffic simulation
+      - name: query-sim
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s -X POST http://localhost:8080/query \
+              -H "Content-Type: application/json" \
+              -d '{"query":"SELECT * FROM clustership.events LIMIT 100"}' > /dev/null 2>&1 || true
+            curl -s http://google-spanner:8080/read > /dev/null 2>&1 || true
+            sleep 0.3
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: google-bigquery
+  labels:
+    app: clustership
+    company: google
+    service: bigquery
+spec:
+  selector:
+    company: google
+    service: bigquery
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

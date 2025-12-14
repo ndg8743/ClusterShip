@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openai-embedding
+  labels:
+    app: clustership
+    company: openai
+    service: embedding
+    tier: compute
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: openai
+      service: embedding
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: openai
+        service: embedding
+        tier: compute
+    spec:
+      containers:
+      # Embedding service - vector generation
+      - name: embedding-server
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import random
+          import math
+          import hashlib
+
+          def generate_embedding(text):
+              # Simulate embedding generation (1536 dimensions like text-embedding-ada-002)
+              seed = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
+              random.seed(seed)
+              embedding = [random.gauss(0, 1) for _ in range(1536)]
+              # Normalize
+              norm = math.sqrt(sum(x*x for x in embedding))
+              return [x/norm for x in embedding]
+
+          class EmbeddingHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  content_length = int(self.headers.get('Content-Length', 0))
+                  body = self.rfile.read(content_length) if content_length else b'{"input":"test"}'
+
+                  try:
+                      data = json.loads(body)
+                      text = data.get('input', 'test')
+                  except:
+                      text = 'test'
+
+                  embedding = generate_embedding(str(text)[:100])
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'object': 'list',
+                      'data': [{
+                          'object': 'embedding',
+                          'embedding': embedding[:10],  # Truncated for demo
+                          'index': 0
+                      }],
+                      'model': 'text-embedding-ada-002',
+                      'usage': {
+                          'prompt_tokens': len(str(text).split()),
+                          'total_tokens': len(str(text).split())
+                      }
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  self.wfile.write(json.dumps({'status': 'ready'}).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), EmbeddingHandler)
+          print('Embedding service on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Vector compute stress
+      - name: vector-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "double"
+        - "--vecmath"
+        - "1"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-embedding
+  labels:
+    app: clustership
+    company: openai
+    service: embedding
+spec:
+  selector:
+    company: openai
+    service: embedding
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

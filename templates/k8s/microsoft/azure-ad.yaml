@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microsoft-azure-ad
+  labels:
+    app: clustership
+    company: microsoft
+    service: azure-ad
+    tier: identity
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: microsoft
+      service: azure-ad
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: microsoft
+        service: azure-ad
+        tier: identity
+    spec:
+      containers:
+      # Identity service - Python OAuth2 simulation
+      - name: identity-server
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import hashlib
+          import time
+          import secrets
+
+          class AzureADHandler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  # Simulate token generation/validation
+                  token = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+                  time.sleep(0.01)  # Simulate crypto work
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'access_token': token[:64],
+                      'token_type': 'Bearer',
+                      'expires_in': 3600,
+                      'tenant': 'clustership'
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), AzureADHandler)
+          print('Azure AD running on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "400m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # CPU stress sidecar for authentication load
+      - name: crypto-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "hash"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "32Mi"
+          limits:
+            cpu: "300m"
+            memory: "64Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microsoft-azure-ad
+  labels:
+    app: clustership
+    company: microsoft
+    service: azure-ad
+spec:
+  selector:
+    company: microsoft
+    service: azure-ad
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

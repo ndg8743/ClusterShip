@@ -1,0 +1,144 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openai-inference
+  labels:
+    app: clustership
+    company: openai
+    service: inference
+    tier: compute
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      company: openai
+      service: inference
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: openai
+        service: inference
+        tier: compute
+    spec:
+      containers:
+      # Model inference server simulation
+      - name: inference-server
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import time
+          import random
+          import math
+
+          def simulate_inference():
+              # Simulate matrix operations (transformer-like)
+              result = 0
+              for i in range(5000):
+                  result += math.sin(i * 0.001) * math.cos(i * 0.002)
+              return result
+
+          class InferenceHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  start = time.time()
+                  result = simulate_inference()
+                  latency = time.time() - start
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'tokens_generated': random.randint(50, 200),
+                      'latency_ms': latency * 1000,
+                      'tokens_per_second': random.uniform(30, 100),
+                      'gpu_utilization': random.uniform(0.7, 0.95),
+                      'batch_size': random.randint(1, 8)
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  self.wfile.write(json.dumps({'status': 'ready', 'model_loaded': True}).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), InferenceHandler)
+          print('Inference server on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "400m"
+            memory: "512Mi"
+          limits:
+            cpu: "800m"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # GPU-like compute stress (simulating inference)
+      - name: compute-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "2"
+        - "--cpu-method"
+        - "matrixprod"
+        - "--matrix"
+        - "1"
+        - "--matrix-size"
+        - "128"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "256Mi"
+          limits:
+            cpu: "600m"
+            memory: "512Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-inference
+  labels:
+    app: clustership
+    company: openai
+    service: inference
+spec:
+  selector:
+    company: openai
+    service: inference
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

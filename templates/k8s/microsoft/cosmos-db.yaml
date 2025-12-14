@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: microsoft-cosmos-db
+  labels:
+    app: clustership
+    company: microsoft
+    service: cosmos-db
+    tier: data
+spec:
+  serviceName: microsoft-cosmos-db
+  replicas: 2
+  selector:
+    matchLabels:
+      company: microsoft
+      service: cosmos-db
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: microsoft
+        service: cosmos-db
+        tier: data
+    spec:
+      containers:
+      # MongoDB as Cosmos DB simulation (document store)
+      - name: mongodb
+        image: mongo:7
+        ports:
+        - containerPort: 27017
+          name: mongodb
+        env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: "cosmos"
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          value: "clustership"
+        - name: MONGO_INITDB_DATABASE
+          value: "clustership"
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "384Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          exec:
+            command:
+            - mongosh
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - mongosh
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: cosmos-data
+          mountPath: /data/db
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Document API server
+      - name: cosmos-api
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import uuid
+
+          class CosmosHandler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'id': str(uuid.uuid4()),
+                      'partitionKey': 'clustership',
+                      'consistency': 'session',
+                      'throughput': '400 RU/s'
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), CosmosHandler)
+          print('Cosmos DB API on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      volumes:
+      - name: cosmos-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microsoft-cosmos-db
+  labels:
+    app: clustership
+    company: microsoft
+    service: cosmos-db
+spec:
+  selector:
+    company: microsoft
+    service: cosmos-db
+  ports:
+  - port: 27017
+    targetPort: 27017
+    name: mongodb
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP
+  clusterIP: None

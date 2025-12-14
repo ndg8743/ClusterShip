@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meta-messenger
+  labels:
+    app: clustership
+    company: meta
+    service: messenger
+    workload-type: cpu-network
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: meta
+      service: messenger
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: meta
+        service: messenger
+        workload-type: cpu-network
+    spec:
+      containers:
+      - name: messenger
+        image: node:18-alpine
+        command: ["node", "-e", "require('http').createServer((req,res)=>{res.end('ok')}).listen(3000)"]
+        ports:
+        - containerPort: 3000
+          name: http
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "256Mi"
+          limits:
+            cpu: "750m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+      - name: pubsub
+        image: redis:7-alpine
+        command: ["redis-server", "--save", "", "--appendonly", "no"]
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+
+      - name: traffic
+        image: curlimages/curl:8.5.0
+        command: ["sh", "-c", "while true; do curl -s http://localhost:3000/ > /dev/null 2>&1 || true; sleep 0.2; done"]
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "32Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meta-messenger
+  labels:
+    app: clustership
+    company: meta
+    service: messenger
+spec:
+  selector:
+    company: meta
+    service: messenger
+  ports:
+  - port: 3000
+    targetPort: 3000
+    name: http
+  type: ClusterIP

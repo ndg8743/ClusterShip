@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflare-edge-proxy
+  labels:
+    app: clustership
+    company: cloudflare
+    service: edge-proxy
+    workload-type: network
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      company: cloudflare
+      service: edge-proxy
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: cloudflare
+        service: edge-proxy
+        workload-type: network
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        - containerPort: 443
+          name: https
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+
+      - name: stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "1", "--io", "1", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+
+      - name: traffic
+        image: curlimages/curl:8.5.0
+        command: ["sh", "-c", "while true; do curl -s http://localhost:80/ > /dev/null 2>&1 || true; sleep 0.05; done"]
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "32Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflare-edge-proxy
+  labels:
+    app: clustership
+    company: cloudflare
+    service: edge-proxy
+spec:
+  selector:
+    company: cloudflare
+    service: edge-proxy
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  type: ClusterIP

@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflare-dns
+  labels:
+    app: clustership
+    company: cloudflare
+    service: dns
+    workload-type: network
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      company: cloudflare
+      service: dns
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: cloudflare
+        service: dns
+        workload-type: network
+    spec:
+      containers:
+      - name: dns
+        image: coredns/coredns:1.11.1
+        args: ["-conf", "/dev/null"]
+        ports:
+        - containerPort: 53
+          name: dns
+          protocol: UDP
+        - containerPort: 53
+          name: dns-tcp
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          tcpSocket:
+            port: 53
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+      - name: cache
+        image: redis:7-alpine
+        command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb"]
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "96Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflare-dns
+  labels:
+    app: clustership
+    company: cloudflare
+    service: dns
+spec:
+  selector:
+    company: cloudflare
+    service: dns
+  ports:
+  - port: 53
+    targetPort: 53
+    name: dns
+    protocol: UDP
+  type: ClusterIP

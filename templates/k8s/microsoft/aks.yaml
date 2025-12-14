@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microsoft-aks
+  labels:
+    app: clustership
+    company: microsoft
+    service: aks
+    tier: control-plane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: microsoft
+      service: aks
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: microsoft
+        service: aks
+        tier: control-plane
+    spec:
+      containers:
+      # AKS control plane simulation - Go API server
+      - name: api-server
+        image: golang:1.22-alpine
+        command:
+        - sh
+        - -c
+        - |
+          cat > /tmp/main.go << 'GOCODE'
+          package main
+          import (
+            "encoding/json"
+            "fmt"
+            "net/http"
+            "os"
+            "time"
+          )
+          type ClusterStatus struct {
+            Name       string `json:"name"`
+            Version    string `json:"kubernetesVersion"`
+            NodeCount  int    `json:"nodeCount"`
+            Status     string `json:"provisioningState"`
+            Location   string `json:"location"`
+          }
+          func main() {
+            http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+              time.Sleep(10 * time.Millisecond)
+              status := ClusterStatus{
+                Name:      "clustership-aks",
+                Version:   "1.28.5",
+                NodeCount: 3,
+                Status:    "Succeeded",
+                Location:  "eastus",
+              }
+              w.Header().Set("Content-Type", "application/json")
+              json.NewEncoder(w).Encode(status)
+            })
+            fmt.Println("AKS API running on port 8080")
+            http.ListenAndServe(":8080", nil)
+          }
+          GOCODE
+          go run /tmp/main.go
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "400m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # etcd simulation for cluster state
+      - name: etcd
+        image: bitnami/etcd:3.5
+        env:
+        - name: ALLOW_NONE_AUTHENTICATION
+          value: "yes"
+        - name: ETCD_ADVERTISE_CLIENT_URLS
+          value: "http://localhost:2379"
+        - name: ETCD_LISTEN_CLIENT_URLS
+          value: "http://0.0.0.0:2379"
+        ports:
+        - containerPort: 2379
+          name: client
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Controller stress simulation
+      - name: controller-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "1"
+        - "--cpu-method"
+        - "loop"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "64Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microsoft-aks
+  labels:
+    app: clustership
+    company: microsoft
+    service: aks
+spec:
+  selector:
+    company: microsoft
+    service: aks
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 2379
+    targetPort: 2379
+    name: etcd
+  type: ClusterIP

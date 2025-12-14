@@ -1,0 +1,167 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: google-search
+  labels:
+    app: clustership
+    company: google
+    service: search
+    tier: core
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      company: google
+      service: search
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: google
+        service: search
+        tier: core
+    spec:
+      containers:
+      # Search index service
+      - name: search-api
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import random
+          import time
+          import hashlib
+
+          # Simulated search index
+          DOCUMENTS = [
+              {'title': 'Kubernetes Documentation', 'url': 'kubernetes.io'},
+              {'title': 'Go Programming Language', 'url': 'go.dev'},
+              {'title': 'Docker Documentation', 'url': 'docs.docker.com'},
+              {'title': 'ClusterShip Game', 'url': 'clustership.dev'},
+          ]
+
+          class SearchHandler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  start = time.time()
+
+                  # Simulate search processing
+                  query_hash = hashlib.md5(self.path.encode()).hexdigest()
+                  random.seed(int(query_hash[:8], 16))
+
+                  results = random.sample(DOCUMENTS, min(len(DOCUMENTS), random.randint(2, 4)))
+                  for r in results:
+                      r['snippet'] = f"Result for query: {self.path}"
+                      r['relevance'] = random.uniform(0.7, 1.0)
+
+                  latency = (time.time() - start) * 1000
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'query': self.path,
+                      'results': results,
+                      'total_results': random.randint(1000000, 50000000000),
+                      'search_time_ms': latency,
+                      'did_you_mean': None
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), SearchHandler)
+          print('Google Search on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "384Mi"
+          limits:
+            cpu: "600m"
+            memory: "768Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Index processing stress
+      - name: index-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "2"
+        - "--cpu-method"
+        - "hash"
+        - "--cache"
+        - "1"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "128Mi"
+          limits:
+            cpu: "400m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Redis for query caching
+      - name: query-cache
+        image: redis:7-alpine
+        command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: google-search
+  labels:
+    app: clustership
+    company: google
+    service: search
+spec:
+  selector:
+    company: google
+    service: search
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP

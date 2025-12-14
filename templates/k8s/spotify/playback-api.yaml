@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spotify-playback-api
+  labels:
+    app: clustership
+    company: spotify
+    service: playback-api
+    workload-type: cpu-network
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: spotify
+      service: playback-api
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: spotify
+        service: playback-api
+        workload-type: cpu-network
+    spec:
+      containers:
+      - name: api
+        image: python:3.11-slim
+        command: ["python", "-m", "http.server", "8080"]
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "256Mi"
+          limits:
+            cpu: "750m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+      - name: session-store
+        image: redis:7-alpine
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "250m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+
+      - name: stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "1", "--io", "1", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spotify-playback-api
+  labels:
+    app: clustership
+    company: spotify
+    service: playback-api
+spec:
+  selector:
+    company: spotify
+    service: playback-api
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

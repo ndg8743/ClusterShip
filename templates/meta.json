@@ -1,0 +1,97 @@
+{
+  "id": "meta",
+  "name": "Meta",
+  "emoji": "",
+  "description": "Social media and metaverse platform with massive scale",
+  "regions": [
+    {
+      "id": "us-east-1",
+      "name": "Virginia",
+      "emoji": "",
+      "racks": 6,
+      "latency_ms": 15
+    },
+    {
+      "id": "us-west-2",
+      "name": "Oregon",
+      "emoji": "",
+      "racks": 5,
+      "latency_ms": 20
+    },
+    {
+      "id": "eu-west-1",
+      "name": "Ireland",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 85
+    },
+    {
+      "id": "ap-southeast-1",
+      "name": "Singapore",
+      "emoji": "",
+      "racks": 3,
+      "latency_ms": 140
+    },
+    {
+      "id": "sa-east-1",
+      "name": "Sao Paulo",
+      "emoji": "",
+      "racks": 2,
+      "latency_ms": 160
+    }
+  ],
+  "services": [
+    {
+      "id": "feed-api",
+      "name": "News Feed API",
+      "emoji": "",
+      "replicas": 8,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "latency-critical",
+      "can_failover": true
+    },
+    {
+      "id": "messenger",
+      "name": "Messenger Backend",
+      "emoji": "",
+      "replicas": 5,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "instagram",
+      "name": "Instagram Service",
+      "emoji": "",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "graph-db",
+      "name": "Social Graph DB",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "ml-ranking",
+      "name": "ML Ranking Engine",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "none",
+      "criticality": "compute",
+      "can_failover": true
+    }
+  ],
+  "ai_strategy": "aggressive",
+  "difficulty": "hard"
+}

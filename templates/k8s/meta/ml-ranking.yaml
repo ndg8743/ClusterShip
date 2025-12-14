@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meta-ml-ranking
+  labels:
+    app: clustership
+    company: meta
+    service: ml-ranking
+    workload-type: compute
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      company: meta
+      service: ml-ranking
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: meta
+        service: ml-ranking
+        workload-type: compute
+    spec:
+      containers:
+      - name: ranking
+        image: python:3.11-slim
+        command: ["python", "-m", "http.server", "8000"]
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "1Gi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+
+      - name: compute
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "2", "--cpu-method", "fft", "--matrix", "1", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "256Mi"
+          limits:
+            cpu: "1500m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meta-ml-ranking
+  labels:
+    app: clustership
+    company: meta
+    service: ml-ranking
+spec:
+  selector:
+    company: meta
+    service: ml-ranking
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  type: ClusterIP

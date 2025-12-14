@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflare-workers
+  labels:
+    app: clustership
+    company: cloudflare
+    service: workers
+    workload-type: compute
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      company: cloudflare
+      service: workers
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: cloudflare
+        service: workers
+        workload-type: compute
+    spec:
+      containers:
+      - name: worker
+        image: node:18-alpine
+        command: ["node", "-e", "require('http').createServer((req,res)=>{let s=0;for(let i=0;i<1e6;i++)s+=i;res.end(''+s)}).listen(8787)"]
+        ports:
+        - containerPort: 8787
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8787
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8787
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+      - name: stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args: ["--cpu", "1", "--cpu-method", "ackermann", "--timeout", "0"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflare-workers
+  labels:
+    app: clustership
+    company: cloudflare
+    service: workers
+spec:
+  selector:
+    company: cloudflare
+    service: workers
+  ports:
+  - port: 8787
+    targetPort: 8787
+    name: http
+  type: ClusterIP

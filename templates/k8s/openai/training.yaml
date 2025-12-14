@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openai-training
+  labels:
+    app: clustership
+    company: openai
+    service: training
+    tier: compute
+spec:
+  serviceName: openai-training
+  replicas: 2
+  selector:
+    matchLabels:
+      company: openai
+      service: training
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: openai
+        service: training
+        tier: compute
+    spec:
+      containers:
+      # Training coordinator
+      - name: training-coordinator
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import time
+          import random
+
+          # Simulated training state
+          training_state = {
+              'epoch': 0,
+              'step': 0,
+              'loss': 2.5,
+              'learning_rate': 0.0001
+          }
+
+          class TrainingHandler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  global training_state
+                  # Simulate training progress
+                  training_state['step'] += random.randint(1, 10)
+                  if training_state['step'] > 1000:
+                      training_state['epoch'] += 1
+                      training_state['step'] = 0
+                  training_state['loss'] = max(0.1, training_state['loss'] - random.uniform(0, 0.01))
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      **training_state,
+                      'gpu_memory_used': random.uniform(70, 95),
+                      'throughput_samples_sec': random.randint(100, 500),
+                      'checkpoint_saved': training_state['step'] == 0
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), TrainingHandler)
+          print('Training coordinator on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "512Mi"
+          limits:
+            cpu: "600m"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /status
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        volumeMounts:
+        - name: checkpoints
+          mountPath: /checkpoints
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Heavy compute stress (simulating GPU training)
+      - name: gpu-stress
+        image: polinux/stress-ng:0.17.04
+        command: ["stress-ng"]
+        args:
+        - "--cpu"
+        - "2"
+        - "--cpu-method"
+        - "fft"
+        - "--matrix"
+        - "1"
+        - "--matrix-size"
+        - "256"
+        - "--vm"
+        - "1"
+        - "--vm-bytes"
+        - "256M"
+        - "--metrics-brief"
+        - "--timeout"
+        - "0"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      volumes:
+      - name: checkpoints
+        emptyDir:
+          sizeLimit: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-training
+  labels:
+    app: clustership
+    company: openai
+    service: training
+spec:
+  selector:
+    company: openai
+    service: training
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP
+  clusterIP: None

@@ -16,10 +16,17 @@ var (
 	colorShip      = lipgloss.Color("255") // white
 
 	// company colors
-	colorPlayer  = lipgloss.Color("250") // bright gray/white for player
-	colorNetflix = lipgloss.Color("196") // red
-	colorAWS     = lipgloss.Color("208") // orange
-	colorGoogle  = lipgloss.Color("39")  // blue
+	colorPlayer     = lipgloss.Color("250") // bright gray/white for player
+	colorNetflix    = lipgloss.Color("196") // red
+	colorAWS        = lipgloss.Color("208") // orange
+	colorGoogle     = lipgloss.Color("39")  // blue
+	colorMicrosoft  = lipgloss.Color("33")  // azure blue
+	colorSteam      = lipgloss.Color("236") // dark gray
+	colorOpenAI     = lipgloss.Color("48")  // teal/green
+	colorIBM        = lipgloss.Color("27")  // IBM blue
+	colorMeta       = lipgloss.Color("33")  // meta blue
+	colorCloudflare = lipgloss.Color("208") // cloudflare orange
+	colorSpotify    = lipgloss.Color("82")  // spotify green
 )
 
 // Styles holds all the lipgloss styles for the TUI
@@ -193,6 +200,20 @@ func CompanyColor(companyID string) lipgloss.Color {
 		return colorAWS
 	case "google":
 		return colorGoogle
+	case "microsoft":
+		return colorMicrosoft
+	case "steam":
+		return colorSteam
+	case "openai":
+		return colorOpenAI
+	case "ibm":
+		return colorIBM
+	case "meta":
+		return colorMeta
+	case "cloudflare":
+		return colorCloudflare
+	case "spotify":
+		return colorSpotify
 	default:
 		return colorShip
 	}

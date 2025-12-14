@@ -1,0 +1,97 @@
+{
+  "id": "microsoft",
+  "name": "Microsoft Azure",
+  "emoji": "",
+  "description": "Enterprise cloud with global presence",
+  "regions": [
+    {
+      "id": "east-us",
+      "name": "Virginia",
+      "emoji": "",
+      "racks": 5,
+      "latency_ms": 20
+    },
+    {
+      "id": "west-us",
+      "name": "California",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 35
+    },
+    {
+      "id": "west-europe",
+      "name": "Netherlands",
+      "emoji": "",
+      "racks": 4,
+      "latency_ms": 85
+    },
+    {
+      "id": "southeast-asia",
+      "name": "Singapore",
+      "emoji": "",
+      "racks": 3,
+      "latency_ms": 150
+    },
+    {
+      "id": "japan-east",
+      "name": "Tokyo",
+      "emoji": "",
+      "racks": 2,
+      "latency_ms": 145
+    }
+  ],
+  "services": [
+    {
+      "id": "azure-ad",
+      "name": "Azure Active Directory",
+      "emoji": "",
+      "replicas": 3,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "teams",
+      "name": "Teams Backend",
+      "emoji": "",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "spread",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "office365",
+      "name": "Office 365 Services",
+      "emoji": "",
+      "replicas": 4,
+      "pods_per_replica": 1,
+      "affinity": "soft",
+      "criticality": "high",
+      "can_failover": true
+    },
+    {
+      "id": "cosmos-db",
+      "name": "Cosmos DB",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    },
+    {
+      "id": "aks",
+      "name": "AKS Control Plane",
+      "emoji": "",
+      "replicas": 2,
+      "pods_per_replica": 1,
+      "affinity": "hard",
+      "criticality": "critical",
+      "can_failover": false
+    }
+  ],
+  "ai_strategy": "defensive",
+  "difficulty": "hard"
+}

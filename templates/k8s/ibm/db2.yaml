@@ -1,0 +1,145 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ibm-db2
+  labels:
+    app: clustership
+    company: ibm
+    service: db2
+    tier: data
+spec:
+  serviceName: ibm-db2
+  replicas: 2
+  selector:
+    matchLabels:
+      company: ibm
+      service: db2
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: ibm
+        service: db2
+        tier: data
+    spec:
+      containers:
+      # Db2 simulation using PostgreSQL
+      - name: postgres
+        image: postgres:16-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_USER
+          value: "db2admin"
+        - name: POSTGRES_PASSWORD
+          value: "clustership"
+        - name: POSTGRES_DB
+          value: "sample"
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "384Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - db2admin
+            - -d
+            - sample
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - db2admin
+            - -d
+            - sample
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: db2-data
+          mountPath: /var/lib/postgresql/data
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Db2 API wrapper
+      - name: db2-api
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import random
+
+          class Db2Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  response = {
+                      'database': 'SAMPLE',
+                      'version': 'Db2 11.5',
+                      'status': 'ACTIVE',
+                      'connections': random.randint(10, 100),
+                      'buffer_pool_hit_ratio': random.uniform(95, 99.9),
+                      'log_utilization': random.uniform(10, 40)
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), Db2Handler)
+          print('Db2 API on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      volumes:
+      - name: db2-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ibm-db2
+  labels:
+    app: clustership
+    company: ibm
+    service: db2
+spec:
+  selector:
+    company: ibm
+    service: db2
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP
+  clusterIP: None

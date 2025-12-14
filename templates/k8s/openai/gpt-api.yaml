@@ -1,0 +1,169 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openai-gpt-api
+  labels:
+    app: clustership
+    company: openai
+    service: gpt-api
+    tier: gateway
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      company: openai
+      service: gpt-api
+  template:
+    metadata:
+      labels:
+        app: clustership
+        company: openai
+        service: gpt-api
+        tier: gateway
+    spec:
+      containers:
+      # API Gateway - Python FastAPI simulation
+      - name: api-gateway
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import uuid
+          import time
+          import random
+
+          class GPTAPIHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  content_length = int(self.headers.get('Content-Length', 0))
+                  body = self.rfile.read(content_length) if content_length else b'{}'
+
+                  # Simulate API processing delay
+                  time.sleep(random.uniform(0.01, 0.05))
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+
+                  response = {
+                      'id': f'chatcmpl-{uuid.uuid4().hex[:24]}',
+                      'object': 'chat.completion',
+                      'created': int(time.time()),
+                      'model': 'gpt-4-turbo',
+                      'choices': [{
+                          'index': 0,
+                          'message': {'role': 'assistant', 'content': 'Response from ClusterShip AI'},
+                          'finish_reason': 'stop'
+                      }],
+                      'usage': {
+                          'prompt_tokens': random.randint(10, 100),
+                          'completion_tokens': random.randint(50, 500),
+                          'total_tokens': random.randint(60, 600)
+                      }
+                  }
+                  self.wfile.write(json.dumps(response).encode())
+
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  self.wfile.write(json.dumps({'status': 'healthy', 'models': ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo']}).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          server = HTTPServer(('0.0.0.0', 8080), GPTAPIHandler)
+          print('GPT API Gateway on port 8080')
+          server.serve_forever()
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Redis for rate limiting and caching
+      - name: rate-limiter
+        image: redis:7-alpine
+        command: ["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-lru"]
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "150m"
+            memory: "128Mi"
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+
+      # Traffic simulation
+      - name: traffic-sim
+        image: curlimages/curl:8.5.0
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            curl -s -X POST http://localhost:8080/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -d '{"model":"gpt-4","messages":[{"role":"user","content":"test"}]}' > /dev/null 2>&1 || true
+            curl -s http://openai-inference:8080/predict > /dev/null 2>&1 || true
+            sleep 0.1
+          done
+        resources:
+          requests:
+            cpu: "25m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "32Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-gpt-api
+  labels:
+    app: clustership
+    company: openai
+    service: gpt-api
+spec:
+  selector:
+    company: openai
+    service: gpt-api
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP
