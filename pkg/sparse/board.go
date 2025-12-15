@@ -1,6 +1,7 @@
 package sparse
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -28,9 +29,9 @@ func NewSparseBoard(width, height int64) *SparseBoard {
 
 // key generates a string key for coordinates
 func key(x, y int64) string {
-	// Simple key format for speed
-	return string(rune(x>>32)) + string(rune(x&0xFFFFFFFF)) +
-		string(rune(y>>32)) + string(rune(y&0xFFFFFFFF))
+	// Use fmt.Sprintf with separator to prevent collisions
+	// e.g., (10, 100) -> "10,100" vs (101, 00) -> "101,0"
+	return fmt.Sprintf("%d,%d", x, y)
 }
 
 // PlaceCell places a cell owned by the given company at the coordinates

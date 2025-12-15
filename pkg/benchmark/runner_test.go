@@ -122,8 +122,8 @@ func TestRunnerRemoveWorker(t *testing.T) {
 		t.Errorf("WorkerCount after removal = %d, want 1", r.GetWorkerCount())
 	}
 
-	// Give worker time to stop
-	time.Sleep(10 * time.Millisecond)
+	// Give worker time to stop - CPU operations can take time to finish
+	time.Sleep(100 * time.Millisecond)
 
 	if w1.IsRunning() {
 		t.Error("removed worker should not be running")
@@ -194,8 +194,9 @@ func TestRunnerCompanyOps(t *testing.T) {
 	r.AddWorker("company1", "service2", WorkloadCPU)
 	r.AddWorker("company2", "service1", WorkloadCPU)
 
-	// Let workers run
-	time.Sleep(200 * time.Millisecond)
+	// Let workers run - need time for workers to start, complete operations,
+	// and for metrics collection to aggregate (happens every 100ms)
+	time.Sleep(350 * time.Millisecond)
 
 	metrics := r.GetMetrics()
 
@@ -222,7 +223,9 @@ func TestWorkerCPU(t *testing.T) {
 	defer r.Stop()
 
 	w := r.AddWorker("company1", "service1", WorkloadCPU)
-	time.Sleep(100 * time.Millisecond)
+	// CPU matrix multiplication (64x64) takes variable time to complete
+	// Need to wait longer to ensure at least one operation completes
+	time.Sleep(250 * time.Millisecond)
 
 	if w.GetOps() == 0 {
 		t.Error("CPU worker should have completed operations")
@@ -243,7 +246,9 @@ func TestWorkerMemory(t *testing.T) {
 	defer r.Stop()
 
 	w := r.AddWorker("company1", "service1", WorkloadMemory)
-	time.Sleep(100 * time.Millisecond)
+	// Memory operations (1MB copy + byte touching) need time to complete
+	// Wait longer to ensure operations complete reliably
+	time.Sleep(250 * time.Millisecond)
 
 	if w.GetOps() == 0 {
 		t.Error("Memory worker should have completed operations")

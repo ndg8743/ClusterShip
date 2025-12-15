@@ -4,6 +4,7 @@ import (
 	"clustership/pkg/game"
 	"fmt"
 	"math/rand"
+	"sync"
 )
 
 // ShotResult tracks what happened when a cell was attacked
@@ -37,6 +38,9 @@ type Board struct {
 
 	// events log
 	Events []game.GameEvent
+
+	// Mutex to protect concurrent map access
+	mu sync.RWMutex
 }
 
 // Fleet represents a placed company on the board
@@ -382,13 +386,21 @@ func (b *Board) Attack(x, y int, byPlayer bool) (*ShotResult, []game.GameEvent) 
 func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult, []game.GameEvent) {
 	key := fmt.Sprintf("%d,%d", x, y)
 
+	// Check if shot already exists (read lock)
+	b.mu.RLock()
 	if b.Shots[attackerID] == nil {
+		b.mu.RUnlock()
+		b.mu.Lock()
 		b.Shots[attackerID] = make(map[string]*ShotResult)
+		b.mu.Unlock()
+		b.mu.RLock()
 	}
 
 	if _, exists := b.Shots[attackerID][key]; exists {
+		b.mu.RUnlock()
 		return nil, nil
 	}
+	b.mu.RUnlock()
 
 	result := &ShotResult{
 		Coord: [2]int{x, y},
@@ -400,24 +412,28 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 	if ownerID == "" || ownerID == attackerID {
 		result.Hit = false
 		result.Message = "Miss"
+		b.mu.Lock()
 		b.Shots[attackerID][key] = result
 		if attackerID == "player" {
 			b.PlayerShots[key] = result
 		} else {
 			b.EnemyShots[key] = result
 		}
+		b.mu.Unlock()
 		return result, events
 	}
 
 	if targetID != "" && ownerID != targetID {
 		result.Hit = false
 		result.Message = "Miss"
+		b.mu.Lock()
 		b.Shots[attackerID][key] = result
 		if attackerID == "player" {
 			b.PlayerShots[key] = result
 		} else {
 			b.EnemyShots[key] = result
 		}
+		b.mu.Unlock()
 		return result, events
 	}
 
@@ -425,7 +441,9 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 	if targetFleet == nil {
 		result.Hit = false
 		result.Message = "Miss"
+		b.mu.Lock()
 		b.Shots[attackerID][key] = result
+		b.mu.Unlock()
 		return result, events
 	}
 
@@ -474,7 +492,9 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 				break
 			}
 		}
-		if allDead && len(rack.Pods) > 0 {
+		// Rack is destroyed if: all pods are dead OR rack has no pods (destroyed on first hit)
+		shouldDestroy := (allDead && len(rack.Pods) > 0) || len(rack.Pods) == 0
+		if shouldDestroy {
 			rack.IsDestroyed = true
 			result.KilledRack = true
 			events = append(events, game.GameEvent{
@@ -516,6 +536,7 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 		result.Message = "Miss"
 	}
 
+	b.mu.Lock()
 	b.Shots[attackerID][key] = result
 	if attackerID == "player" {
 		b.PlayerShots[key] = result
@@ -523,6 +544,7 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 		b.EnemyShots[key] = result
 	}
 	b.Events = append(b.Events, events...)
+	b.mu.Unlock()
 
 	return result, events
 }
@@ -609,7 +631,11 @@ const (
 func (b *Board) GetPlayerCellState(x, y int) CellState {
 	key := fmt.Sprintf("%d,%d", x, y)
 
-	if result, ok := b.EnemyShots[key]; ok {
+	b.mu.RLock()
+	result, ok := b.EnemyShots[key]
+	b.mu.RUnlock()
+
+	if ok {
 		if result.Hit {
 			if result.KilledRack {
 				return CellDestroyed
@@ -631,7 +657,11 @@ func (b *Board) GetPlayerCellState(x, y int) CellState {
 func (b *Board) GetEnemyCellState(x, y int) CellState {
 	key := fmt.Sprintf("%d,%d", x, y)
 
-	if result, ok := b.PlayerShots[key]; ok {
+	b.mu.RLock()
+	result, ok := b.PlayerShots[key]
+	b.mu.RUnlock()
+
+	if ok {
 		if result.Hit {
 			if result.KilledRack {
 				return CellDestroyed
@@ -815,11 +845,13 @@ func (b *Board) GetCellInfo(x, y int, attackerID string) CellInfo {
 		}
 	}
 
+	b.mu.RLock()
 	if b.Shots[attackerID] != nil {
 		if _, hit := b.Shots[attackerID][key]; hit {
 			info.WasHit = true
 		}
 	}
+	b.mu.RUnlock()
 
 	info.CanAttack = ownerID != attackerID && !info.WasHit
 

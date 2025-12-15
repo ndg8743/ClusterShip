@@ -198,9 +198,16 @@ func TestMemoryBounded(t *testing.T) {
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
 	heapAfter := m2.HeapAlloc
-	memUsedMB := float64(heapAfter-heapBefore) / 1024 / 1024
 
-	t.Logf("Memory used for 10 boards: %.2f MB", memUsedMB)
+	// Handle case where heapAfter < heapBefore (GC freed memory)
+	var memUsedMB float64
+	if heapAfter > heapBefore {
+		memUsedMB = float64(heapAfter-heapBefore) / 1024 / 1024
+	} else {
+		memUsedMB = 0
+	}
+
+	t.Logf("Memory used for 10 boards: %.2f MB (heap before: %d, after: %d)", memUsedMB, heapBefore, heapAfter)
 
 	// Verify memory is reasonable (< 200MB for 10x 100x100 boards)
 	if memUsedMB > 200 {
