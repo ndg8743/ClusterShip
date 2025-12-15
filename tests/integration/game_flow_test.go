@@ -9,7 +9,6 @@ import (
 	"clustership/pkg/game"
 	"clustership/pkg/tui"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -289,12 +288,8 @@ func TestGameFlowQuitToMenu(t *testing.T) {
 
 // TestGameFlowSettingsPersistence tests settings are saved and loaded
 func TestGameFlowSettingsPersistence(t *testing.T) {
-	// Create temp config directory
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "config.json")
 
-	// Override config path (this would require exposing config.configPath or using env)
-	// For now, we'll test the config API directly
 	cfg := config.Default()
 	cfg.BoardWidth = 100
 	cfg.BoardHeight = 100
