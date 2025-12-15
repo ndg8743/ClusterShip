@@ -38,9 +38,13 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Remove .out directory if exists
+      - name: Remove .out directory if exists (Unix)
+        if: runner.os != 'Windows'
         run: rm -rf .out || true
-        shell: bash
+      - name: Remove .out directory if exists (Windows)
+        if: runner.os == 'Windows'
+        run: if (Test-Path .out) { Remove-Item -Recurse -Force .out }
+        shell: pwsh
       - run: go test -race -coverprofile=coverage.out ./...
       - if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v4

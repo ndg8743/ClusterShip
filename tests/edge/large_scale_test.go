@@ -68,7 +68,13 @@ func TestLargeBoard1000x1000(t *testing.T) {
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
 	allocAfter := m2.Alloc
-	memUsedMB := float64(allocAfter-allocBefore) / 1024 / 1024
+	// Handle potential underflow if GC freed more than we allocated
+	var memUsedMB float64
+	if allocAfter > allocBefore {
+		memUsedMB = float64(allocAfter-allocBefore) / 1024 / 1024
+	} else {
+		memUsedMB = 0 // GC freed memory
+	}
 
 	t.Logf("Board creation took: %v", elapsed)
 	t.Logf("Memory used: %.2f MB", memUsedMB)

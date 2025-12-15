@@ -1,0 +1,1373 @@
+\documentclass[11pt]{article}
+
+% Page setup
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+% Graphics and code
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{float}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{colortbl}
+
+% Fonts and formatting
+\usepackage{enumitem}
+\usepackage{parskip}
+
+% Code listing style
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codegreen}{RGB}{0,128,0}
+\definecolor{codegray}{RGB}{128,128,128}
+\definecolor{codeblue}{RGB}{0,0,192}
+\definecolor{codepurple}{RGB}{128,0,128}
+
+\lstdefinelanguage{Go}{
+    keywords={break, case, chan, const, continue, default, defer, else, fallthrough, for, func, go, goto, if, import, interface, map, package, range, return, select, struct, switch, type, var},
+    keywordstyle=\color{codeblue}\bfseries,
+    keywords=[2]{string, int, int64, bool, error, nil, true, false},
+    keywordstyle=[2]\color{codepurple},
+    identifierstyle=\color{black},
+    sensitive=true,
+    comment=[l]{//},
+    morecomment=[s]{/*}{*/},
+    commentstyle=\color{codegreen}\ttfamily,
+    stringstyle=\color{codegray},
+    morestring=[b]",
+    morestring=[b]`
+}
+
+\lstset{
+    language=Go,
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=8pt,
+    numberstyle=\tiny\color{codegray},
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=4,
+    frame=single,
+    framesep=5pt,
+    xleftmargin=15pt
+}
+
+\title{\textbf{ClusterShip} \\ \large A Terminal Battleship Game for Learning Kubernetes \\ \vspace{0.5cm} \normalsize Game Guide \& Code Walkthrough}
+\author{ClusterShip Documentation}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+ClusterShip is a terminal-based battleship game that teaches Kubernetes concepts through interactive gameplay. This document serves as both a player-facing game guide and a developer-facing code walkthrough, explaining how game mechanics map to real Kubernetes architecture, the design decisions behind each package, and how the optional real-cluster integration works.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+\subsection{What is ClusterShip?}
+
+ClusterShip is a terminal battleship game where you battle AI opponents representing major tech companies (Netflix, AWS, Google, Meta, etc.) on a shared 100$\times$100 ocean. Each company operates a ``fleet'' of regions (data centers), racks (server slots), and pods (workload units) that mirror real Kubernetes infrastructure.
+
+The game teaches Kubernetes concepts through gameplay:
+\begin{itemize}
+    \item \textbf{Pods} are individual workload units that can be destroyed and rescheduled
+    \item \textbf{Services} maintain desired replica counts and handle failover
+    \item \textbf{Affinity rules} determine whether pods can be rescheduled when their rack is destroyed
+    \item \textbf{Namespaces} isolate each company's resources
+    \item \textbf{Events} show real-time pod lifecycle changes
+\end{itemize}
+
+\subsection{Simulation vs Real Kubernetes}
+
+ClusterShip operates in two modes:
+
+\begin{enumerate}
+    \item \textbf{Simulation Mode (default)}: All game logic runs locally. Pod scheduling, attacks, and rescheduling are simulated in memory. No actual Kubernetes cluster is required.
+
+    \item \textbf{Real Kubernetes Mode}: When enabled in settings, ClusterShip deploys actual pods to your Kubernetes cluster. Attacks translate to \texttt{kubectl delete} commands, and pod events stream from the real cluster's API server.
+\end{enumerate}
+
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}\textbf{Figure: Architecture Overview}\\Game Layer $\rightarrow$ K8s Integration Layer $\rightarrow$ External Cluster\vspace{2cm}}}
+    \caption{ClusterShip architecture showing game layer, optional K8s integration, and external cluster communication.}
+    \label{fig:architecture}
+\end{figure}
+
+\subsection{High-Level Gameplay Loop}
+
+\begin{enumerate}
+    \item \textbf{Menu}: Choose New Game, Demo Mode, Settings, or Tutorial
+    \item \textbf{Company Select}: Pick your company (e.g., Netflix, AWS)
+    \item \textbf{Enemy Select}: Choose 1--5 AI opponents
+    \item \textbf{Placement}: Fleets are placed on the shared ocean (no overlap)
+    \item \textbf{Battle}: Take turns attacking enemy racks; AI opponents attack you
+    \item \textbf{Game Over}: Win by destroying all enemy pods, or lose when yours are gone
+\end{enumerate}
+
+\section{Getting Started \& Configuration}
+
+\subsection{Prerequisites}
+
+\begin{itemize}
+    \item \textbf{Go 1.24+}: Required to build and run
+    \item \textbf{Terminal}: Any terminal supporting ANSI colors (iTerm2, Windows Terminal, etc.)
+    \item \textbf{Optional}: Docker Desktop or \texttt{kind} for real K8s integration
+\end{itemize}
+
+\subsection{Installation \& Running}
+
+\begin{lstlisting}[language=bash,numbers=none]
+# Clone the repository
+git clone https://github.com/ndg8743/ClusterShip.git
+cd ClusterShip
+
+# Run directly
+go run ./cmd/clustership
+
+# Or build and run
+go build -o clustership ./cmd/clustership
+./clustership
+\end{lstlisting}
+
+\subsection{Configuration}
+
+Settings are stored in \texttt{\textasciitilde/.clustership/config.json}. The \texttt{GameConfig} struct in \texttt{pkg/config/config.go} defines all configurable options:
+
+\begin{lstlisting}
+type GameConfig struct {
+    BoardWidth     int64  `json:"board_width"`
+    BoardHeight    int64  `json:"board_height"`
+    ShipsPerPlayer int    `json:"ships_per_player"`
+    RacksPerShip   int    `json:"racks_per_ship"`
+    PodsPerRack    int    `json:"pods_per_rack"`
+    TurnDelayMs    int    `json:"turn_delay_ms"`
+    EnableRealK8s  bool   `json:"enable_real_k8s"`
+    K8sNamespace   string `json:"k8s_namespace"`
+    Kubeconfig     string `json:"kubeconfig"`
+    UseSparseBoard bool   `json:"use_sparse_board"`
+}
+\end{lstlisting}
+
+Access these via the in-game Settings menu (\texttt{S} key from main menu).
+
+
+\section{Game Concepts and Kubernetes Mapping}
+
+
+Every ClusterShip game element has a direct Kubernetes equivalent. Understanding these mappings helps you learn real K8s concepts through gameplay.
+
+\subsection{Component Mapping Table}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{ClusterShip} & \textbf{Kubernetes} & \textbf{Role} \\
+\midrule
+Board & API Server + etcd & Single source of truth for game state \\
+Company & Namespace & Isolated group of resources \\
+Region (Ship) & Node & Physical machine / data center \\
+Rack (Cell) & Node capacity slot & Individual server slot \\
+Pod & Pod & Workload unit that can be killed/rescheduled \\
+Service & Deployment + Service & Logical grouping with replica count \\
+AI Player & Controller/Operator & Watches state, makes decisions \\
+Attack & \texttt{kubectl delete pod} & Destroys workloads \\
+Rescheduling & Pod eviction/recreation & Moves pods based on affinity \\
+\bottomrule
+\end{tabular}
+\caption{ClusterShip to Kubernetes component mapping}
+\label{tab:mapping}
+\end{table}
+
+\subsection{Conceptual Hierarchy}
+
+The game follows a strict hierarchy that mirrors K8s resource ownership:
+
+\begin{verbatim}
+Company (Namespace)
+  |-- Service (Deployment)
+  |     |-- Pod 1
+  |     |-- Pod 2
+  |     `-- Pod 3
+  `-- Region (Node)
+        |-- Rack 0 --> [Pod, Pod]
+        |-- Rack 1 --> [Pod]
+        `-- Rack 2 --> [Pod]
+\end{verbatim}
+
+% Placeholder for hierarchy diagram
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}\textbf{Figure: Conceptual Hierarchy}\\Company $\rightarrow$ Services $\rightarrow$ Pods $\rightarrow$ Regions $\rightarrow$ Racks\vspace{2cm}}}
+    \caption{Hierarchical relationship between game components}
+    \label{fig:hierarchy}
+\end{figure}
+
+\subsection{Affinity Types}
+
+Affinity determines what happens when a rack is destroyed:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Affinity} & \textbf{Icon} & \textbf{Rescheduling} & \textbf{K8s Equivalent} \\
+\midrule
+Hard & {[!]} & NO - pod stays Pending & \texttt{requiredDuringScheduling} \\
+Soft & {[o]} & Yes, prefers same region & \texttt{preferredDuringScheduling} \\
+Spread & {[\textasciitilde]} & Yes, spreads across racks & \texttt{podAntiAffinity} \\
+None & {[-]} & Yes, anywhere & No constraints \\
+\bottomrule
+\end{tabular}
+\caption{Affinity types and their Kubernetes equivalents}
+\label{tab:affinity}
+\end{table}
+
+Hard affinity is used for stateful workloads like primary databases that cannot be moved. Spread affinity is used for CDN edge nodes that benefit from distribution. This mirrors real-world K8s scheduling decisions.
+
+
+\section{Companies, Services, and Templates}
+
+
+\subsection{Company Templates}
+
+Companies are defined in JSON template files under \texttt{templates/companies/}. Each template specifies the company's regions, services, AI strategy, and difficulty.
+
+\begin{lstlisting}
+type CompanyTemplate struct {
+    ID          string           `json:"id"`
+    Name        string           `json:"name"`
+    Emoji       string           `json:"emoji"`
+    Description string           `json:"description"`
+    Regions     []RegionTemplate `json:"regions"`
+    Services    []ServiceTemplate `json:"services"`
+    AIStrategy  AIStrategy       `json:"ai_strategy"`
+    Difficulty  string           `json:"difficulty"`
+}
+\end{lstlisting}
+
+\subsection{Service Templates}
+
+Services define logical groupings of pods with shared characteristics:
+
+\begin{lstlisting}
+type ServiceTemplate struct {
+    ID             string       `json:"id"`
+    Name           string       `json:"name"`
+    Replicas       int          `json:"replicas"`
+    PodsPerReplica int          `json:"pods_per_replica"`
+    Affinity       AffinityType `json:"affinity"`
+    Criticality    string       `json:"criticality"`
+    CanFailover    bool         `json:"can_failover"`
+}
+\end{lstlisting}
+
+\subsection{Example Companies and Services}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Company} & \textbf{Service} & \textbf{Affinity} & \textbf{Description} \\
+\midrule
+Netflix & cdn-edge & Spread & CDN nodes distributed globally \\
+Netflix & database & Hard & Primary database, cannot move \\
+Netflix & playback & Soft & Video playback servers \\
+AWS & ec2-api & Soft & Compute API servers \\
+AWS & s3-storage & Hard & Object storage, stateful \\
+Google & bigtable & Hard & Distributed database \\
+\bottomrule
+\end{tabular}
+\caption{Example companies and their services}
+\label{tab:companies}
+\end{table}
+
+\subsection{K8s Manifest Templates}
+
+When real K8s mode is enabled, each service has corresponding YAML manifests in \texttt{templates/k8s/<company>/}. These are real Kubernetes Deployments and Services that run actual containers:
+
+\begin{verbatim}
+templates/k8s/
+  netflix/
+    cdn-edge.yaml      # nginx + curl sidecar
+    database.yaml      # postgres
+    playback.yaml      # node.js
+  aws/
+    ec2-api.yaml       # python HTTP
+    s3-storage.yaml    # minio
+\end{verbatim}
+
+
+\section{Playing the Game: Controls and Views}
+
+
+\subsection{Controls}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Key} & \textbf{Action} \\
+\midrule
+Arrow keys / WASD & Move cursor on the board \\
+Enter / Space & Fire at cursor position \\
+1--5 & Change view level \\
+C & Cycle service display (your services vs enemy) \\
+D & Toggle debug mode (see all ships) \\
+I & Toggle info overlay \\
+Q & Quit / Back to menu \\
+\bottomrule
+\end{tabular}
+\caption{Game controls}
+\label{tab:controls}
+\end{table}
+
+\subsection{View Levels}
+
+The game provides five hierarchical view levels, accessed with number keys 1--5:
+
+\begin{enumerate}
+    \item \textbf{Map View (1)}: Overview of the 100$\times$100 ocean showing ships and attacks
+    \item \textbf{Ship View (2)}: List of your regions (ships) with health status
+    \item \textbf{Rack View (3)}: Drill into individual racks within a ship, showing pods
+    \item \textbf{YAML View (4)}: K8s manifests (fog of war applied to enemies)
+    \item \textbf{Rack Layout (5)}: Visual grid showing pod distribution per rack
+\end{enumerate}
+
+\subsection{Game Interface}
+
+\begin{verbatim}
++-------------------------------------------------------------+
+| CLUSTERSHIP - Player vs Netflix vs AWS    Turn: 42 [VIEW 1] |
++-------------------------------------------------------------+
+|                                                              |
+| 100x100 SHARED OCEAN        SERVICE STATUS                   |
+| +-------------------+       [!]Origin API  [####-] 80%       |
+| | . . . . X . . . . |       [~]CDN Edge    [#####] 100%      |
+| | . . # # # # # . . |       [o]Playback    [###--] 60%       |
+| | . . . . . . . . . |                                        |
+| | . . . . . O . . . | <cursor                                |
+| +-------------------+       K8S EVENTS                       |
+|                             [+] Pod cdn-edge rescheduled     |
+| [1-5] view  [arrows] move  [enter] fire  [q] quit           |
++-------------------------------------------------------------+
+\end{verbatim}
+
+
+\section{Code Architecture Overview}
+
+
+\subsection{Package Structure}
+
+ClusterShip is organized into focused packages, each with a specific responsibility:
+
+\begin{verbatim}
+cmd/clustership/     Entry point (main.go)
+pkg/
+  config/            Configuration loading, validation, persistence
+  game/              Domain model: Company, Region, Rack, Pod, Service
+  sparse/            Sparse board representation using quadtree
+  tui/               Terminal UI using Bubble Tea framework
+  k8s/               Real Kubernetes client, deployer, watcher
+  benchmark/         Performance benchmarking and metrics
+  hardware/          System detection for performance tiers
+\end{verbatim}
+
+% Placeholder for package dependency diagram
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}\textbf{Figure: Package Dependency Graph}\\cmd $\rightarrow$ tui $\rightarrow$ game, config, k8s, benchmark\\tui $\rightarrow$ sparse\vspace{2cm}}}
+    \caption{Package dependencies in ClusterShip}
+    \label{fig:packages}
+\end{figure}
+
+\subsection{Why These Packages?}
+
+\begin{itemize}
+    \item \textbf{config}: Centralized configuration with hardware-aware defaults. Uses Go's \texttt{encoding/json} for persistence.
+
+    \item \textbf{game}: Pure domain model with no UI or I/O dependencies. Makes testing trivial and allows reuse.
+
+    \item \textbf{sparse}: For large boards (1000$\times$1000+), storing every cell is wasteful. The quadtree provides O(log n) lookups with minimal memory.
+
+    \item \textbf{tui}: Bubble Tea is chosen for its functional architecture (Model-Update-View) and excellent terminal rendering via Lip Gloss.
+
+    \item \textbf{k8s}: Isolates all Kubernetes dependencies. Uses \texttt{client-go} for API communication, which is the official Go client library.
+
+    \item \textbf{benchmark}: Supports stress testing large boards and measuring performance. Uses atomic counters for thread-safe metrics.
+
+    \item \textbf{hardware}: Detects RAM, CPU cores, and GPU availability to set appropriate defaults for the user's system.
+\end{itemize}
+
+\subsection{Entry Point}
+
+\begin{lstlisting}
+// cmd/clustership/main.go
+func main() {
+    p := tea.NewProgram(tui.NewAppModel(), tea.WithAltScreen())
+    if _, err := p.Run(); err != nil {
+        fmt.Printf("Error: %v\n", err)
+        os.Exit(1)
+    }
+}
+\end{lstlisting}
+
+The entry point is minimal---it creates a Bubble Tea program with the \texttt{AppModel} and runs it. All game logic lives in the \texttt{tui} package.
+
+
+\section{The Game Model: Companies, Regions, Racks, Pods}
+
+
+\subsection{Core Types}
+
+The \texttt{pkg/game/company.go} file defines the core domain types:
+
+\begin{lstlisting}
+type Company struct {
+    ID          string
+    Name        string
+    Regions     []*Region
+    Services    []*Service
+    AIStrategy  AIStrategy
+}
+
+type Region struct {
+    ID        string
+    Name      string
+    RackCount int
+    Racks     []*Rack
+    Placement [][2]int  // board coordinates
+    IsDestroyed bool
+}
+
+type Rack struct {
+    ID          string
+    Position    [2]int
+    Capacity    int
+    Pods        []*Pod
+    IsDestroyed bool
+}
+
+type Pod struct {
+    ID        string
+    ServiceID string
+    Health    int
+    Status    PodStatus  // Running, Pending, Terminated
+}
+\end{lstlisting}
+
+\subsection{Services and Affinity}
+
+Services represent logical workload groupings:
+
+\begin{lstlisting}
+type Service struct {
+    ID          string
+    Name        string
+    Replicas    int
+    Affinity    AffinityType
+    Pods        []*Pod
+    IsHealthy   bool
+}
+
+type AffinityType string
+
+const (
+    AffinityHard   AffinityType = "hard"
+    AffinitySoft   AffinityType = "soft"
+    AffinitySpread AffinityType = "spread"
+    AffinityNone   AffinityType = "none"
+)
+\end{lstlisting}
+
+\subsection{Attack Flow}
+
+When an attack occurs:
+\begin{enumerate}
+    \item Board identifies the cell at (x, y)
+    \item If cell has a rack, damage is applied to pods on that rack
+    \item If pod health reaches 0, check service affinity
+    \item Hard affinity: pod stays Pending (cannot reschedule)
+    \item Other affinity: find new rack and reschedule pod
+    \item Generate GameEvent for the event log
+\end{enumerate}
+
+
+\section{The Board and Sparse Representation}
+
+
+\subsection{Why Sparse?}
+
+A 100$\times$100 board has 10,000 cells, which is manageable. But ClusterShip supports boards up to 10,000,000$\times$10,000,000 for stress testing. A dense array would require terabytes of memory. Instead, we use a quadtree.
+
+\subsection{Quadtree Implementation}
+
+The \texttt{pkg/sparse/quadtree.go} implements a region quadtree:
+
+\begin{lstlisting}
+type QuadTree struct {
+    root   *node
+    bounds Bounds
+    size   int
+}
+
+type node struct {
+    bounds   Bounds
+    children [4]*node  // NW, NE, SW, SE
+    items    []Item
+    isLeaf   bool
+}
+
+func (qt *QuadTree) Insert(x, y int64, value interface{}) {
+    // Recursively subdivide until item fits in a small enough region
+}
+
+func (qt *QuadTree) Query(x, y int64) (interface{}, bool) {
+    // O(log n) lookup
+}
+\end{lstlisting}
+
+\subsection{Board Interface}
+
+The \texttt{pkg/sparse/board.go} provides the game-facing interface:
+
+\begin{lstlisting}
+type SparseBoard struct {
+    tree   *QuadTree
+    width  int64
+    height int64
+}
+
+func (b *SparseBoard) SetCell(x, y int64, cell *Cell) error
+func (b *SparseBoard) GetCell(x, y int64) (*Cell, bool)
+func (b *SparseBoard) CellCount() int
+\end{lstlisting}
+
+% Placeholder for quadtree diagram
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}\textbf{Figure: Quadtree Visualization}\\2$\times$2 recursive subdivision showing occupied vs empty cells\vspace{2cm}}}
+    \caption{Quadtree spatial subdivision}
+    \label{fig:quadtree}
+\end{figure}
+
+
+\section{TUI and Game Loop}
+
+
+\subsection{Bubble Tea Architecture}
+
+ClusterShip uses the \href{https://github.com/charmbracelet/bubbletea}{Bubble Tea} framework, which implements the Elm Architecture:
+
+\begin{itemize}
+    \item \textbf{Model}: Application state (\texttt{AppModel})
+    \item \textbf{Update}: Handle messages, return new model + commands
+    \item \textbf{View}: Render model to string for display
+\end{itemize}
+
+\begin{lstlisting}
+type AppModel struct {
+    state        GameState
+    cfg          *config.GameConfig
+    board        *Board
+    ais          map[string]*AIPlayer
+    cursor       [2]int
+    turn         int
+    k8sClient    *k8s.Client
+    // ... more fields
+}
+
+func (m AppModel) Init() tea.Cmd {
+    return doTick()
+}
+
+func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    switch msg := msg.(type) {
+    case tea.KeyMsg:
+        return m.handleKeyPress(msg)
+    case tickMsg:
+        return m.handleTick()
+    }
+    return m, nil
+}
+
+func (m AppModel) View() string {
+    return m.renderCurrentState()
+}
+\end{lstlisting}
+
+\subsection{Game States}
+
+The game uses a finite state machine:
+
+\begin{lstlisting}
+type GameState int
+
+const (
+    StateMenu GameState = iota
+    StateCompanySelect
+    StateEnemySelect
+    StatePlacement
+    StateBattle
+    StateGameOver
+    StateSettings
+    // ...
+)
+\end{lstlisting}
+
+% Placeholder for state machine diagram
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}\textbf{Figure: State Machine}\\Menu $\rightarrow$ CompanySelect $\rightarrow$ EnemySelect $\rightarrow$ Placement $\rightarrow$ Battle $\rightarrow$ GameOver\vspace{2cm}}}
+    \caption{Game state transitions}
+    \label{fig:states}
+\end{figure}
+
+\subsection{Tick System}
+
+The game loop is driven by ticks:
+
+\begin{lstlisting}
+type tickMsg time.Time
+
+func doTickWithDelay(ms int) tea.Cmd {
+    return tea.Tick(time.Duration(ms)*time.Millisecond,
+        func(t time.Time) tea.Msg {
+            return tickMsg(t)
+        })
+}
+
+func (m *AppModel) tick() tea.Cmd {
+    return doTickWithDelay(m.cfg.TurnDelayMs)
+}
+\end{lstlisting}
+
+Each tick advances the turn counter and triggers AI moves during battle.
+
+
+\section{Real Kubernetes Integration}
+
+
+\subsection{When K8s Integration is Enabled}
+
+In Settings, toggle ``Real K8s'' to ON. The game will:
+\begin{enumerate}
+    \item Create a namespace (\texttt{clustership} by default)
+    \item Deploy all company manifests as real pods
+    \item Watch pod events from the cluster
+    \item Translate attacks to \texttt{kubectl delete} operations
+    \item Clean up namespace on game exit
+\end{enumerate}
+
+\subsection{K8s Client}
+
+The \texttt{pkg/k8s/client.go} wraps the official \texttt{client-go} library:
+
+\begin{lstlisting}
+type Client struct {
+    clientset kubernetes.Interface
+    config    *rest.Config
+    namespace string
+}
+
+func NewClient(kubeconfig, namespace string) (*Client, error) {
+    config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+    if err != nil {
+        return nil, err
+    }
+
+    clientset, err := kubernetes.NewForConfig(config)
+    if err != nil {
+        return nil, err
+    }
+
+    return &Client{clientset: clientset, config: config, namespace: namespace}, nil
+}
+\end{lstlisting}
+
+\subsection{Why client-go?}
+
+\texttt{client-go} is the official Kubernetes Go client maintained by the Kubernetes project. It provides:
+\begin{itemize}
+    \item Type-safe API for all K8s resources
+    \item Automatic authentication via kubeconfig
+    \item Watch support for streaming events
+    \item Retry and backoff handling
+\end{itemize}
+
+\subsection{Deployer}
+
+The \texttt{pkg/k8s/deployer.go} handles resource creation:
+
+\begin{lstlisting}
+func (c *Client) DeployManifest(ctx context.Context, manifest *Manifest) error {
+    switch manifest.Kind {
+    case "Deployment":
+        return c.deployDeployment(ctx, manifest)
+    case "StatefulSet":
+        return c.deployStatefulSet(ctx, manifest)
+    case "Pod":
+        return c.deployPod(ctx, manifest)
+    case "Service":
+        return c.deployService(ctx, manifest)
+    }
+    return nil
+}
+\end{lstlisting}
+
+\subsection{Pod Watcher}
+
+Real-time pod events are streamed via the K8s watch API:
+
+\begin{lstlisting}
+func (c *Client) WatchPods(ctx context.Context, ns string) (<-chan PodEvent, error) {
+    watcher, err := c.clientset.CoreV1().Pods(ns).Watch(ctx, metav1.ListOptions{
+        LabelSelector: "app=clustership",
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    events := make(chan PodEvent)
+    go func() {
+        for event := range watcher.ResultChan() {
+            events <- convertEvent(event)
+        }
+    }()
+    return events, nil
+}
+\end{lstlisting}
+
+% Placeholder for K8s integration flow diagram
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}\textbf{Figure: K8s Integration Flow}\\TUI $\rightarrow$ K8s Client $\rightarrow$ API Server $\rightarrow$ Pods $\rightarrow$ Watcher $\rightarrow$ Events $\rightarrow$ TUI\vspace{2cm}}}
+    \caption{Real Kubernetes integration flow}
+    \label{fig:k8sflow}
+\end{figure}
+
+
+\section{AI, Affinity, and Rescheduling Mechanics}
+
+
+\subsection{AI Strategies}
+
+Each AI company uses a strategy defined in \texttt{pkg/tui/ai.go}:
+
+\begin{lstlisting}
+type AIStrategy string
+
+const (
+    AIRandom     AIStrategy = "random"     // Pure random targeting
+    AIHunter     AIStrategy = "hunter"     // Hunt neighbors after hit
+    AIDefensive  AIStrategy = "defensive"  // Protect critical services
+    AIAggressive AIStrategy = "aggressive" // Target high-value first
+)
+\end{lstlisting}
+
+\textbf{AIRandom}: Picks a random cell. Simple but unpredictable.
+
+\textbf{AIHunter}: After scoring a hit, searches adjacent cells to finish off the ship. Mimics human strategy.
+
+\textbf{AIAggressive}: Uses KNN (K-Nearest Neighbors) analysis to identify clusters of ships and targets high-probability areas.
+
+\textbf{AIDefensive}: Prioritizes attacks on enemies threatening its critical services.
+
+\subsection{Rescheduling Algorithm}
+
+When a pod is killed:
+
+\begin{enumerate}
+    \item Check the service's \texttt{AffinityType}
+    \item \textbf{Hard}: Mark pod as Pending, do not reschedule
+    \item \textbf{Soft}: Search same region first, then other regions
+    \item \textbf{Spread}: Find the rack with fewest pods
+    \item \textbf{None}: Find any rack with capacity
+    \item If a suitable rack is found, move the pod there
+    \item If no capacity exists, mark pod as Pending
+\end{enumerate}
+
+\begin{lstlisting}
+func (b *Board) reschedulePod(pod *Pod, svc *Service) bool {
+    switch svc.Affinity {
+    case AffinityHard:
+        return false  // Cannot reschedule
+    case AffinitySoft:
+        return b.findRackInRegion(pod.RegionID) != nil
+    case AffinitySpread:
+        return b.findLeastLoadedRack() != nil
+    case AffinityNone:
+        return b.findAnyRack() != nil
+    }
+    return false
+}
+\end{lstlisting}
+
+
+\section{Configuration, Performance, and Benchmarks}
+
+
+\subsection{Hardware Detection}
+
+The \texttt{pkg/hardware/detect.go} analyzes the system:
+
+\begin{lstlisting}
+type SystemInfo struct {
+    TotalRAM   uint64
+    CPUCores   int
+    HasGPU     bool
+    GPUMemory  uint64
+}
+
+type PerformanceTier string
+
+const (
+    TierBasic    PerformanceTier = "basic"
+    TierStandard PerformanceTier = "standard"
+    TierAdvanced PerformanceTier = "advanced"
+    TierExtreme  PerformanceTier = "extreme"
+)
+\end{lstlisting}
+
+Each tier has different limits for board size, ships, and pods to ensure smooth gameplay.
+
+\subsection{Performance Tiers}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Tier} & \textbf{RAM} & \textbf{Max Board} & \textbf{Sparse Mode} \\
+\midrule
+Basic & $<$4GB & 100$\times$100 & Auto at $>$1000 \\
+Standard & 4--8GB & 1,000$\times$1,000 & Auto at $>$1000 \\
+Advanced & 8--16GB & 100,000$\times$100,000 & Auto at $>$1000 \\
+Extreme & $>$16GB & 10M$\times$10M & Auto at $>$1000 \\
+\bottomrule
+\end{tabular}
+\caption{Performance tiers and their limits}
+\label{tab:tiers}
+\end{table}
+
+\subsection{Benchmark Package}
+
+The \texttt{pkg/benchmark} package provides stress testing:
+
+\begin{lstlisting}
+type Metrics struct {
+    TotalOps    atomic.Int64
+    WorkerCount atomic.Int32
+    OpsPerSec   atomic.Int64
+}
+
+type Runner struct {
+    workers map[string]*Worker
+    metrics *Metrics
+}
+\end{lstlisting}
+
+Atomic counters ensure thread-safe metrics collection across multiple goroutines.
+
+
+\section{Benchmark Results}
+
+This section presents performance benchmarks measuring ClusterShip's scaling characteristics across all performance tiers on different hardware configurations.
+
+\subsection{Test Environment 1: High-End Desktop}
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|l|l|}
+\hline
+\multicolumn{2}{|c|}{\textbf{Desktop Hardware Configuration}} \\
+\hline
+\textbf{Component} & \textbf{Specification} \\
+\hline
+CPU & 32 Cores (x86\_64) \\
+RAM & 196 GB DDR5 \\
+GPU & NVIDIA GeForce RTX 5070 Ti \\
+VRAM & 16,303 MB GDDR7 \\
+\hline
+\multicolumn{2}{|c|}{\textbf{Software Environment}} \\
+\hline
+OS & Windows 11 \\
+Go Version & 1.24.11 \\
+GOMAXPROCS & 32 \\
+Detected Tier & Extreme \\
+\hline
+\end{tabular}
+\caption{Desktop benchmark environment specifications}
+\label{tab:testenv-desktop}
+\end{table}
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+\rowcolor{codebg}
+\textbf{Tier} & \textbf{Board Size} & \textbf{Creation} & \textbf{Memory} & \textbf{Lookups/sec} & \textbf{Status} \\
+\hline
+\cellcolor{green!20}Basic & 100 $\times$ 100 & $<$0.01 ms & 0.02 MB & 2.5M & \textcolor{green!60!black}{PASS} \\
+\hline
+\cellcolor{blue!20}Standard & 1,000 $\times$ 1,000 & 1.00 ms & 0.22 MB & 19.9M & \textcolor{green!60!black}{PASS} \\
+\hline
+\cellcolor{orange!20}Advanced & 10,000 $\times$ 10,000 & 9.62 ms & 2.03 MB & 19.9M & \textcolor{green!60!black}{PASS} \\
+\hline
+\cellcolor{red!20}Extreme & 100,000 $\times$ 100,000 & 65.29 ms & 19.19 MB & 19.7M & \textcolor{green!60!black}{PASS} \\
+\hline
+\end{tabular}
+\caption{Desktop performance benchmarks across all tiers}
+\label{tab:benchmarks-desktop}
+\end{table}
+
+\subsection{Test Environment 2: Apple Silicon Laptop}
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|l|l|}
+\hline
+\multicolumn{2}{|c|}{\textbf{Laptop Hardware Configuration}} \\
+\hline
+\textbf{Component} & \textbf{Specification} \\
+\hline
+CPU & Apple M1 Pro (10 Cores) \\
+RAM & 16 GB Unified Memory \\
+GPU & Apple M1 Pro (16-core GPU) \\
+\hline
+\multicolumn{2}{|c|}{\textbf{Software Environment}} \\
+\hline
+OS & macOS \\
+Go Version & 1.24.11 \\
+GOMAXPROCS & 10 \\
+Detected Tier & Standard \\
+\hline
+\end{tabular}
+\caption{Laptop benchmark environment specifications}
+\label{tab:testenv-laptop}
+\end{table}
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+\rowcolor{codebg}
+\textbf{Tier} & \textbf{Board Size} & \textbf{Creation} & \textbf{Memory} & \textbf{Lookups/sec} & \textbf{Status} \\
+\hline
+\cellcolor{green!20}Basic & 100 $\times$ 100 & --- & --- & --- & --- \\
+\hline
+\cellcolor{blue!20}Standard & 1,000 $\times$ 1,000 & --- & --- & --- & --- \\
+\hline
+\cellcolor{orange!20}Advanced & 10,000 $\times$ 10,000 & --- & --- & --- & --- \\
+\hline
+\cellcolor{red!20}Extreme & 100,000 $\times$ 100,000 & --- & --- & --- & --- \\
+\hline
+\end{tabular}
+\caption{Laptop performance benchmarks across all tiers}
+\label{tab:benchmarks-laptop}
+\end{table}
+
+\subsection{Scaling Analysis}
+
+\begin{figure}[H]
+\centering
+\begin{tabular}{cc}
+\fbox{\parbox{0.45\textwidth}{
+\centering
+\textbf{Board Creation Time (Desktop)}\\[0.5em]
+\begin{tabular}{r|l}
+Basic & \rule{0.1cm}{0.3cm} $<$0.01ms \\
+Standard & \rule{0.5cm}{0.3cm} 1.00ms \\
+Advanced & \rule{1.0cm}{0.3cm} 9.62ms \\
+Extreme & \rule{2.5cm}{0.3cm} 65.29ms \\
+\end{tabular}
+}} &
+\fbox{\parbox{0.45\textwidth}{
+\centering
+\textbf{Memory Usage (Desktop)}\\[0.5em]
+\begin{tabular}{r|l}
+Basic & \rule{0.1cm}{0.3cm} 0.02MB \\
+Standard & \rule{0.2cm}{0.3cm} 0.22MB \\
+Advanced & \rule{0.5cm}{0.3cm} 2.03MB \\
+Extreme & \rule{2.5cm}{0.3cm} 19.19MB \\
+\end{tabular}
+}}
+\end{tabular}
+\caption{Visual comparison of creation time and memory usage across tiers (Desktop)}
+\label{fig:benchviz}
+\end{figure}
+
+\subsection{Key Findings}
+
+\begin{enumerate}
+    \item \textbf{Efficient Sparse Representation}: The QuadTree-based sparse board enables a 100,000 $\times$ 100,000 board (10 billion potential cells) to use only 19.19 MB of memory.
+
+    \item \textbf{Consistent Lookup Performance}: Attack lookups maintain 19--20 million operations per second across all tiers on desktop hardware, demonstrating O(log n) QuadTree query performance.
+
+    \item \textbf{Linear Creation Scaling}: Board creation time scales linearly with the number of placed cells, not total board area:
+    \begin{itemize}
+        \item Basic: 300 cells $\rightarrow$ $<$0.01ms
+        \item Standard: 1,000 cells $\rightarrow$ 1.00ms
+        \item Advanced: 10,000 cells $\rightarrow$ 9.62ms
+        \item Extreme: 100,000 cells $\rightarrow$ 65.29ms
+    \end{itemize}
+
+    \item \textbf{Memory Efficiency}: Memory grows with placed cell count, not board dimensions. The Extreme tier board is 1,000,000$\times$ larger in area than Basic but only uses approximately 960$\times$ more memory.
+\end{enumerate}
+
+\subsection{Running Your Own Benchmarks}
+
+To run benchmarks on your system:
+
+\begin{lstlisting}[language=bash,numbers=none]
+# Build the benchmark tool
+go build -o benchmark ./cmd/benchmark
+
+# Run all tier benchmarks
+./benchmark --all-tiers
+
+# Run specific tier
+./benchmark --tier Advanced
+
+# Output as JSON for processing
+./benchmark --all-tiers --json
+
+# Or use Docker for isolated testing
+docker build -f Dockerfile.benchmark -t clustership-benchmark .
+docker run --rm --gpus all clustership-benchmark --all-tiers
+\end{lstlisting}
+
+\subsection{Performance Recommendations}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{System RAM} & \textbf{Recommended Tier} & \textbf{Max Board Size} \\
+\hline
+$<$ 4 GB & Basic & 100 $\times$ 100 \\
+4--8 GB & Standard & 1,000 $\times$ 1,000 \\
+8--16 GB & Advanced & 100,000 $\times$ 100,000 \\
+$>$ 16 GB + GPU & Extreme & 10,000,000 $\times$ 10,000,000 \\
+\hline
+\end{tabular}
+\caption{Recommended performance tier based on system resources}
+\label{tab:recommendations}
+\end{table}
+
+
+\section{Extending ClusterShip}
+
+
+\subsection{Adding a New Company}
+
+\begin{enumerate}
+    \item Create \texttt{templates/companies/mycompany.json}:
+\begin{lstlisting}[language=json,numbers=none]
+{
+    "id": "mycompany",
+    "name": "My Company",
+    "regions": [{"id": "dc1", "name": "DC 1", "racks": 3}],
+    "services": [{"id": "api", "name": "API", "replicas": 3, "affinity": "soft"}],
+    "ai_strategy": "hunter"
+}
+\end{lstlisting}
+    \item Create \texttt{templates/k8s/mycompany/api.yaml} (for real K8s mode)
+    \item The game auto-discovers new companies on startup
+\end{enumerate}
+
+\subsection{Adding a New View}
+
+\begin{enumerate}
+    \item Add a new \texttt{ViewLevel} constant in \texttt{pkg/tui/app.go}
+    \item Create a render function: \texttt{func (m *AppModel) renderMyView() string}
+    \item Add case to the view switch in the main \texttt{View()} method
+    \item Handle the key press to switch to your view
+\end{enumerate}
+
+\subsection{Custom Affinity Rules}
+
+\begin{enumerate}
+    \item Add new \texttt{AffinityType} constant in \texttt{pkg/game/company.go}
+    \item Implement rescheduling logic in \texttt{pkg/tui/board.go}
+    \item Update JSON schema to accept new affinity type
+\end{enumerate}
+
+
+\section{Dependencies and Libraries}
+
+
+\subsection{Core Dependencies}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Package} & \textbf{Purpose} & \textbf{Why Chosen} \\
+\midrule
+Bubble Tea & Terminal UI & Elm Architecture, functional, testable \\
+Lip Gloss & Styling & Clean API for colors, borders, layout \\
+client-go & K8s client & Official, type-safe, maintained by K8s \\
+\bottomrule
+\end{tabular}
+\caption{Core dependencies}
+\label{tab:deps}
+\end{table}
+
+\subsection{Bubble Tea Explained}
+
+Bubble Tea implements the Elm Architecture in Go:
+\begin{itemize}
+    \item \textbf{Immutable state}: Each Update returns a new model
+    \item \textbf{Message-driven}: All changes come through messages
+    \item \textbf{Testable}: Pure functions make unit testing trivial
+    \item \textbf{Composable}: Build complex UIs from simple components
+\end{itemize}
+
+\subsection{Lip Gloss Explained}
+
+Lip Gloss provides declarative styling:
+\begin{lstlisting}
+var titleStyle = lipgloss.NewStyle().
+    Bold(true).
+    Foreground(lipgloss.Color("205")).
+    Padding(0, 1)
+
+rendered := titleStyle.Render("CLUSTERSHIP")
+\end{lstlisting}
+
+
+\section*{Appendix A: Reference Tables}
+
+\addcontentsline{toc}{section}{Appendix A: Reference Tables}
+
+\subsection*{All Companies}
+
+\begin{longtable}{@{}lll@{}}
+\toprule
+\textbf{ID} & \textbf{Name} & \textbf{Difficulty} \\
+\midrule
+\endhead
+netflix & Netflix & Medium \\
+aws & Amazon Web Services & Hard \\
+google & Google Cloud & Hard \\
+meta & Meta & Medium \\
+microsoft & Microsoft Azure & Hard \\
+apple & Apple & Easy \\
+\bottomrule
+\end{longtable}
+
+\subsection*{Key Types by Package}
+
+\begin{longtable}{@{}ll@{}}
+\toprule
+\textbf{Package} & \textbf{Key Types} \\
+\midrule
+\endhead
+pkg/game & Company, Region, Rack, Pod, Service, AffinityType, AIStrategy \\
+pkg/tui & AppModel, GameState, ViewLevel, Board, AIPlayer \\
+pkg/k8s & Client, Manifest, PodInfo, PodEvent \\
+pkg/config & GameConfig \\
+pkg/sparse & QuadTree, SparseBoard, Cell \\
+pkg/benchmark & Metrics, Runner, Worker \\
+pkg/hardware & SystemInfo, PerformanceTier, TierLimits \\
+\bottomrule
+\end{longtable}
+
+
+\section*{References and Citations}
+
+\addcontentsline{toc}{section}{References and Citations}
+
+\begin{thebibliography}{99}
+
+
+
+
+\bibitem{k8suprunning}
+Burns, B., Beda, J., Hightower, K., \& Evenson, L. (2022). \textit{Kubernetes: Up and Running}, 3rd Edition.
+O'Reilly Media. ISBN: 978-1098110208
+
+\bibitem{dataintensive}
+Kleppmann, M. (2017). \textit{Designing Data-Intensive Applications: The Big Ideas Behind Reliable, Scalable, and Maintainable Systems}.
+O'Reilly Media. ISBN: 978-1449373320
+
+
+
+
+\bibitem{schedulingsurvey}
+Carrion, C. (2022). Kubernetes Scheduling: Taxonomy, Ongoing Issues and Challenges.
+\textit{arXiv preprint arXiv:2203.00671}. \url{https://arxiv.org/abs/2203.00671}
+
+\bibitem{k8sschedulingpaper}
+Kubernetes Scheduling Algorithms Survey. (2025).
+\textit{arXiv preprint arXiv:2504.17033}. \url{https://arxiv.org/pdf/2504.17033}
+
+\bibitem{mincostflow}
+Wikipedia. \textit{Minimum-cost flow problem}.
+\url{https://en.wikipedia.org/wiki/Minimum-cost_flow_problem}
+
+\bibitem{fibonacciheap}
+Wikipedia. \textit{Fibonacci heap}.
+\url{https://en.wikipedia.org/wiki/Fibonacci_heap}
+
+\bibitem{dijkstra}
+Modern Data 101. (2024). \textit{The New Dijkstra's Algorithm: Shortest Path Finding}.
+\url{https://moderndata101.substack.com/p/the-new-dijkstras-algorithm-shortest}
+
+
+
+
+\bibitem{bubbletea}
+Charm. (2020--2024). \textit{Bubble Tea: A powerful little TUI framework for Go}.
+GitHub. \url{https://github.com/charmbracelet/bubbletea}
+
+\bibitem{lipgloss}
+Charm. (2021--2024). \textit{Lip Gloss: Style definitions for nice terminal layouts in Go}.
+GitHub. \url{https://github.com/charmbracelet/lipgloss}
+
+\bibitem{gorillamux}
+Gorilla Web Toolkit. \textit{gorilla/mux: A powerful HTTP router and URL matcher for Go}.
+GitHub. \url{https://github.com/gorilla/mux}
+
+\bibitem{clientgo}
+Kubernetes Authors. (2016--2024). \textit{client-go: Go client for Kubernetes}.
+GitHub. \url{https://github.com/kubernetes/client-go}
+
+
+
+
+\bibitem{k8sdocs}
+Kubernetes Authors. (2024). \textit{Kubernetes Documentation}.
+\url{https://kubernetes.io/docs/home/}
+
+\bibitem{gobyexample}
+Warden, M. \textit{Go by Example}.
+\url{https://gobyexample.com/}
+
+\bibitem{minikubetutorials}
+Kubernetes SIGs. \textit{minikube Tutorials}.
+\url{https://minikube.sigs.k8s.io/docs/tutorials/}
+
+\bibitem{golangdocs}
+Go Authors. (2009--2024). \textit{The Go Programming Language}.
+\url{https://go.dev}
+
+
+
+
+\bibitem{k8sarchitecture}
+Aqua Security. (2020). \textit{Kubernetes 101: Kubernetes Architecture}.
+\url{https://www.aquasec.com/cloud-native-academy/kubernetes-101/kubernetes-architecture/}
+
+\bibitem{k8scoreconcepts}
+DZero Labs. \textit{Just-in-Time Kubernetes: A Beginner's Guide to Kubernetes Core Concepts}.
+Medium. \url{https://medium.com/dzerolabs/just-in-time-kubernetes-a-beginners-guide-to-kubernetes-core-concepts-19ee7acbafa1}
+
+\bibitem{k8sgoarchitecture}
+LeapCell. \textit{Learning Large-Scale Go Project Architecture from K8s}.
+Medium. \url{https://leapcell.medium.com/learning-large-scale-go-project-architecture-from-k8s-6c8f2c3862d8}
+
+\bibitem{whatismux}
+Kim, J. (2022). \textit{What Even Is A Mux?}
+Dev.to. \url{https://dev.to/jpoly1219/what-even-is-a-mux-4fng}
+
+\bibitem{containerdvsdocker}
+Docker. \textit{containerd vs Docker}.
+Docker Blog. \url{https://www.docker.com/blog/containerd-vs-docker/}
+
+\bibitem{k8swiki}
+Wikipedia. \textit{Kubernetes}.
+\url{https://en.wikipedia.org/wiki/Kubernetes}
+
+
+
+
+\bibitem{goplaylist}
+Go Programming Tutorials. \textit{Go Programming Language Tutorial}.
+YouTube Playlist. \url{https://youtube.com/playlist?list=PLmD8u-IFdreyh6EUfevBcbiuCKzFk0EW_}
+
+
+
+
+\bibitem{quadtree}
+Finkel, R. A., \& Bentley, J. L. (1974). Quad Trees: A Data Structure for Retrieval on Composite Keys.
+\textit{Acta Informatica}, 4(1), 1--9. \url{https://doi.org/10.1007/BF00288933}
+
+\bibitem{samet1990}
+Samet, H. (1990). \textit{The Design and Analysis of Spatial Data Structures}.
+Addison-Wesley. ISBN: 978-0201502558
+
+
+
+
+\bibitem{elm}
+Czaplicki, E. (2012--2024). \textit{The Elm Architecture}.
+\url{https://guide.elm-lang.org/architecture/}
+
+\bibitem{controllerpattern}
+Kubernetes Authors. (2024). \textit{Kubernetes Controller Pattern}.
+\url{https://kubernetes.io/docs/concepts/architecture/controller/}
+
+
+
+
+\bibitem{k9s}
+Poitras, F. (2019--2024). \textit{K9s: Kubernetes CLI To Manage Your Clusters In Style}.
+GitHub. \url{https://github.com/derailed/k9s}
+
+\bibitem{lazydocker}
+Jesseduffield. (2019--2024). \textit{Lazydocker: A simple terminal UI for Docker and Docker Compose}.
+GitHub. \url{https://github.com/jesseduffield/lazydocker}
+
+
+
+
+\bibitem{syncatomic}
+Go Authors. (2024). \textit{sync/atomic - The Go Standard Library}.
+\url{https://pkg.go.dev/sync/atomic}
+
+\bibitem{runtimememstats}
+Go Authors. (2024). \textit{runtime - Memory Statistics in Go}.
+\url{https://pkg.go.dev/runtime#MemStats}
+
+\bibitem{encodingjson}
+Go Authors. (2024). \textit{encoding/json - The Go Standard Library}.
+\url{https://pkg.go.dev/encoding/json}
+
+
+
+
+\bibitem{battleship}
+Milton Bradley. (1967). \textit{Battleship (game)}.
+Original pencil and paper game dates to World War I.
+\url{https://en.wikipedia.org/wiki/Battleship_(game)}
+
+\end{thebibliography}
+
+\end{document}

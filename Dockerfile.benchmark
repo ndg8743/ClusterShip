@@ -1,0 +1,30 @@
+# Benchmark Dockerfile for ClusterShip
+# Runs scaling tests at each performance tier in an isolated container
+
+ARG GO_VERSION=1.24rc1
+
+FROM golang:${GO_VERSION}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates \
+    tzdata \
+    make \
+    bash \
+    pciutils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+ENV GOTOOLCHAIN=auto
+RUN go mod download && go mod verify
+
+COPY . .
+
+RUN go build -o /app/bin/benchmark ./cmd/benchmark
+
+ENV TERM=xterm-256color
+
+ENTRYPOINT ["/app/bin/benchmark"]
+CMD ["--all-tiers"]
