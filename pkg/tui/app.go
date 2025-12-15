@@ -97,8 +97,8 @@ const (
 
 // Minimum terminal size constants
 const (
-	minTerminalWidth  = 60
-	minTerminalHeight = 20
+	minTerminalWidth  = 30
+	minTerminalHeight = 12
 )
 
 // AppModel is the main Bubble Tea model for the game
@@ -251,8 +251,8 @@ func NewAppModel() AppModel {
 		systemInfo:    sysInfo,
 		tier:          tier,
 		tierLimits:    *limits,
-		viewW:         30,
-		viewH:         20,
+		viewW:         20,
+		viewH:         15,
 		viewLevel:     ViewMap,
 	}
 }
@@ -577,23 +577,29 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // Skip layout calculations for tiny terminals
 		}
 
-		// Calculate aspect ratio for adaptive layout
+		// Calculate layout based on terminal size
+		isNarrow := msg.Width < 60
+		isSmall := msg.Width < 80 || msg.Height < 24
 		aspectRatio := float64(msg.Width) / float64(msg.Height)
-		isLandscape := aspectRatio > 1.5  // Wide terminal
-		isPortrait := aspectRatio < 0.8   // Tall terminal
+		isLandscape := aspectRatio > 1.5
+		isPortrait := aspectRatio < 0.8
 
-		// Reserve space for UI based on layout
+		// Reserve space for UI - reduce sidebar for narrow terminals
 		var sidebarW, headerH int
-		if isLandscape {
-			// Landscape: smaller sidebar, more board space
+		if isNarrow {
+			// Narrow terminal: hide sidebar, board only
+			sidebarW = 0
+			headerH = 4
+		} else if isSmall {
+			sidebarW = 20
+			headerH = 5
+		} else if isLandscape {
 			sidebarW = 45
 			headerH = 10
 		} else if isPortrait {
-			// Portrait: minimal sidebar, stack vertically
 			sidebarW = 30
 			headerH = 8
 		} else {
-			// Normal: balanced layout
 			sidebarW = 50
 			headerH = 12
 		}
@@ -601,26 +607,28 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		availableW := msg.Width - sidebarW
 		availableH := msg.Height - headerH
 
-		if availableW < 20 {
-			availableW = 20
+		if availableW < 8 {
+			availableW = 8
 		}
-		if availableH < 10 {
-			availableH = 10
+		if availableH < 6 {
+			availableH = 6
 		}
 
 		// Each cell takes 2 chars (symbol + space)
-		// Adjust max limits based on aspect ratio
 		var maxViewW, maxViewH int
-		if isLandscape {
-			// Landscape: prioritize width, allow larger horizontal viewport
+		if isNarrow {
+			maxViewW = 15
+			maxViewH = 10
+		} else if isSmall {
+			maxViewW = 25
+			maxViewH = 15
+		} else if isLandscape {
 			maxViewW = 80
 			maxViewH = 25
 		} else if isPortrait {
-			// Portrait: prioritize height, allow larger vertical viewport
 			maxViewW = 35
 			maxViewH = 50
 		} else {
-			// Normal: balanced
 			maxViewW = 50
 			maxViewH = 35
 		}
@@ -790,6 +798,9 @@ func (m AppModel) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateCompanySelect handles company selection
 func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.companies) == 0 {
+		return m, nil
+	}
 	switch msg.String() {
 	case "up", "k":
 		if m.companyCursor > 0 {
@@ -800,6 +811,9 @@ func (m AppModel) updateCompanySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.companyCursor++
 		}
 	case "enter", " ":
+		if m.companyCursor >= len(m.companies) {
+			m.companyCursor = 0
+		}
 		// load selected company as player
 		template, err := game.LoadCompanyTemplate(m.companies[m.companyCursor])
 		if err != nil {
@@ -859,6 +873,9 @@ func (m AppModel) updateEnemyCountSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateEnemySelect handles selecting which enemy companies to fight
 func (m AppModel) updateEnemySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.companies) == 0 {
+		return m, nil
+	}
 	targetCount := m.enemyCountCursor + 1
 
 	switch msg.String() {
@@ -871,6 +888,9 @@ func (m AppModel) updateEnemySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.enemySelectCursor++
 		}
 	case "enter", " ":
+		if m.enemySelectCursor >= len(m.companies) {
+			m.enemySelectCursor = 0
+		}
 		selectedID := m.companies[m.enemySelectCursor]
 
 		// Can't select player's company
@@ -3795,12 +3815,15 @@ func (m AppModel) getPanelName() string {
 }
 
 func (m *AppModel) pickRandomEnemy(exclude string) string {
+	if len(m.companies) == 0 {
+		return ""
+	}
 	for _, id := range m.companies {
 		if id != exclude {
 			return id
 		}
 	}
-	return m.companies[0] // fallback
+	return m.companies[0]
 }
 
 func (m *AppModel) checkWinCondition() {
