@@ -152,6 +152,11 @@ func (c *GameConfig) Validate() {
 	}
 	limits := c.detectedLimits
 
+	// Auto-enable sparse board for large scales (check before clamping)
+	if c.BoardWidth > 1000 || c.BoardHeight > 1000 {
+		c.UseSparseBoard = true
+	}
+
 	// Board dimensions
 	c.BoardWidth = clamp64(c.BoardWidth, 20, limits.MaxBoardWidth)
 	c.BoardHeight = clamp64(c.BoardHeight, 20, limits.MaxBoardHeight)
@@ -166,11 +171,6 @@ func (c *GameConfig) Validate() {
 	// Defaults
 	if c.K8sNamespace == "" {
 		c.K8sNamespace = "clustership"
-	}
-
-	// Auto-enable sparse board for large scales
-	if c.BoardWidth > 1000 || c.BoardHeight > 1000 {
-		c.UseSparseBoard = true
 	}
 
 	// Auto-disable GPU if not available

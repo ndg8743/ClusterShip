@@ -151,8 +151,8 @@ func TestRunnerMetricsAggregation(t *testing.T) {
 	w2 := r.AddWorker("company1", "service2", WorkloadCPU)
 	w3 := r.AddWorker("company2", "service1", WorkloadCPU)
 
-	// Let workers run for a bit
-	time.Sleep(200 * time.Millisecond)
+	// Let workers run - CI environments are slower
+	time.Sleep(500 * time.Millisecond)
 
 	metrics := r.GetMetrics()
 
