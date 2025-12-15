@@ -31,7 +31,7 @@ var tutorialSteps = []TutorialStep{
 	},
 	{
 		Title:   "The Ocean Board",
-		Content: "The game board is a 100x100 ocean grid.\nEach cell can contain a rack (part of a ship).\n\nSymbols:\n ~ = Water (empty)\n # = Your ship\n X = Hit (damaged)\n o = Miss\n ! = Destroyed",
+		Content: "The game board is a 100x100 ocean grid.\nEach cell can contain a rack (part of a ship).\n\nSymbols:\n ~ = Water (empty)\n # = Your ship\n X = Hit (damaged)\n o = Miss\n ! = Destroyed (rack)\n ≡ = Sunk (region)",
 		Visual: `
    +---+---+---+---+---+---+---+---+
    | ~ | ~ | ~ | # | # | # | ~ | ~ |

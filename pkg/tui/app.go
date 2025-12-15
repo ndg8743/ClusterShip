@@ -4,6 +4,7 @@ import (
 	"clustership/pkg/benchmark"
 	"clustership/pkg/config"
 	"clustership/pkg/game"
+	"clustership/pkg/hardware"
 	"clustership/pkg/k8s"
 	"context"
 	"fmt"
@@ -67,7 +68,8 @@ const (
 	StateCompanySelect
 	StateEnemyCountSelect // select how many enemies (1-5)
 	StateEnemySelect      // select which enemy companies
-	StatePlacement
+	StatePlacementPrompt  // ask if user wants manual placement
+	StatePlacement        // auto-placement or manual placement in progress
 	StateBattle
 	StatePodView  // view pod details for selected service
 	StateTutorial // tutorial walkthrough
@@ -102,6 +104,11 @@ type AppModel struct {
 
 	// config
 	cfg *config.GameConfig
+
+	// hardware detection
+	systemInfo *hardware.SystemInfo
+	tier       hardware.PerformanceTier
+	tierLimits hardware.TierLimits
 
 	// menu state
 	menuCursor int
@@ -157,6 +164,16 @@ type AppModel struct {
 	debugMode        bool // show all ships (no fog of war)
 	serviceViewIndex int  // which company's services to display (0=player, 1+=enemies)
 
+	// Panel navigation/scrolling state
+	serviceScrollOffset int // scroll offset for services list
+	eventsScrollOffset  int // scroll offset for K8s events
+	battleLogOffset     int // scroll offset for battle log
+	fleetStatsOffset    int // scroll offset for fleet stats (when many companies)
+	shipViewOffset      int // scroll offset for ship view
+	rackViewOffset      int // scroll offset for rack view
+	podViewPodOffset    int // scroll offset for pods within a service
+	activePanel         int // which panel is active for navigation (0=board, 1=services, 2=events, 3=log)
+
 	// view hierarchy (1-4 keys)
 	viewLevel        ViewLevel     // current view depth
 	selectedShipID   string        // ship selected for drill-down
@@ -187,6 +204,13 @@ type AppModel struct {
 	showInfoOverlay bool // toggle info overlay with "i" key
 	tutorialStep    int  // current tutorial step (0 = not in tutorial)
 
+	// Manual ship placement
+	manualPlacement       bool     // whether manual placement is enabled
+	placementRegionIndex  int      // which region is being placed
+	placementVertical     bool     // true for vertical orientation
+	placementCursor       [2]int   // cursor position for placement preview
+	placementOccupied     map[string]bool // cells already occupied during placement
+
 	// K8s settings and health
 	k8sSettingsCursor   int  // cursor for K8s settings menu (0=toggle, 1=namespace, 2=kubeconfig)
 	k8sClusterConnected bool // cached cluster connection status
@@ -200,7 +224,15 @@ func NewAppModel() AppModel {
 	if cfg == nil {
 		cfg = config.Default()
 	}
+
+	// Detect hardware and validate config against tier limits
+	// Config.Validate() already applies tier limits internally
 	cfg.Validate()
+
+	// Cache the detected tier info for UI display
+	tier := cfg.GetTier()
+	limits := cfg.GetLimits()
+	sysInfo := cfg.GetSystemInfo()
 
 	return AppModel{
 		state:         StateMenu,
@@ -209,6 +241,9 @@ func NewAppModel() AppModel {
 		settingsItems: []string{"Board", "Ships", "Pods", "Bots", "Timing", "Kubernetes", "Save & Back"},
 		companies:     game.ListCompanies(),
 		cfg:           cfg,
+		systemInfo:    sysInfo,
+		tier:          tier,
+		tierLimits:    *limits,
 		viewW:         30,
 		viewH:         20,
 		viewLevel:     ViewMap,
@@ -528,24 +563,64 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Scale viewport based on terminal size and board size
-		// Reserve space for UI: ~60 chars for side panel, ~12 lines for header/footer
-		availableW := msg.Width - 60
-		availableH := msg.Height - 12
+
+		// Calculate aspect ratio for adaptive layout
+		aspectRatio := float64(msg.Width) / float64(msg.Height)
+		isLandscape := aspectRatio > 1.5  // Wide terminal
+		isPortrait := aspectRatio < 0.8   // Tall terminal
+
+		// Reserve space for UI based on layout
+		var sidebarW, headerH int
+		if isLandscape {
+			// Landscape: smaller sidebar, more board space
+			sidebarW = 45
+			headerH = 10
+		} else if isPortrait {
+			// Portrait: minimal sidebar, stack vertically
+			sidebarW = 30
+			headerH = 8
+		} else {
+			// Normal: balanced layout
+			sidebarW = 50
+			headerH = 12
+		}
+
+		availableW := msg.Width - sidebarW
+		availableH := msg.Height - headerH
+
 		if availableW < 20 {
 			availableW = 20
 		}
 		if availableH < 10 {
 			availableH = 10
 		}
+
 		// Each cell takes 2 chars (symbol + space)
-		m.viewW = min(availableW/2, 50)
-		m.viewH = min(availableH, 30)
+		// Adjust max limits based on aspect ratio
+		var maxViewW, maxViewH int
+		if isLandscape {
+			// Landscape: prioritize width, allow larger horizontal viewport
+			maxViewW = 80
+			maxViewH = 25
+		} else if isPortrait {
+			// Portrait: prioritize height, allow larger vertical viewport
+			maxViewW = 35
+			maxViewH = 50
+		} else {
+			// Normal: balanced
+			maxViewW = 50
+			maxViewH = 35
+		}
+
+		m.viewW = min(availableW/2, maxViewW)
+		m.viewH = min(availableH, maxViewH)
+
 		// If board exists, cap to board size
 		if m.board != nil {
 			m.viewW = min(m.viewW, m.board.Width)
 			m.viewH = min(m.viewH, m.board.Height)
 		}
+
 		// Ensure cursor stays in view after resize
 		m.ensureCursorInView()
 		return m, nil
@@ -631,6 +706,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEnemyCountSelect(msg)
 		case StateEnemySelect:
 			return m.updateEnemySelect(msg)
+		case StatePlacementPrompt:
+			return m.updatePlacementPrompt(msg)
 		case StatePlacement:
 			return m.updatePlacement(msg)
 		case StateBattle:
@@ -752,7 +829,7 @@ func (m AppModel) updateEnemyCountSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Single enemy - auto-pick random
 			enemyID := m.pickRandomEnemy(m.playerCompany.ID)
 			m.selectedEnemies = append(m.selectedEnemies, enemyID)
-			m.state = StatePlacement
+			m.state = StatePlacementPrompt
 		} else {
 			// Multiple enemies - go to enemy selection screen
 			m.state = StateEnemySelect
@@ -803,7 +880,7 @@ func (m AppModel) updateEnemySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c": // Confirm selection
 		if len(m.selectedEnemies) == targetCount {
-			m.state = StatePlacement
+			m.state = StatePlacementPrompt
 		}
 	case "esc":
 		m.state = StateEnemyCountSelect
@@ -812,8 +889,36 @@ func (m AppModel) updateEnemySelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updatePlacement handles ship placement phase (auto-place for now)
+// updatePlacementPrompt handles the y/n prompt for manual ship placement
+func (m AppModel) updatePlacementPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Enable manual placement mode
+		m.manualPlacement = true
+		m.placementRegionIndex = 0
+		m.placementVertical = false
+		m.placementOccupied = make(map[string]bool)
+		boardW, boardH := m.cfg.BoardWidthInt(), m.cfg.BoardHeightInt()
+		m.placementCursor = [2]int{boardW / 4, boardH / 4}
+		m.state = StatePlacement
+	case "n", "N", "enter", " ":
+		// Auto-placement (default)
+		m.manualPlacement = false
+		m.state = StatePlacement
+	case "esc":
+		m.state = StateEnemySelect
+	}
+	return m, nil
+}
+
+// updatePlacement handles ship placement phase
 func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Manual placement mode
+	if m.manualPlacement {
+		return m.updateManualPlacement(msg)
+	}
+
+	// Auto placement mode
 	switch msg.String() {
 	case "enter", " ":
 		// Build list of all companies
@@ -946,6 +1051,199 @@ func (m AppModel) updatePlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateManualPlacement handles manual ship placement with arrow keys and rotation
+func (m AppModel) updateManualPlacement(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.playerCompany == nil || len(m.playerCompany.Regions) == 0 {
+		return m, nil
+	}
+
+	boardW, boardH := m.cfg.BoardWidthInt(), m.cfg.BoardHeightInt()
+	currentRegion := m.playerCompany.Regions[m.placementRegionIndex]
+
+	switch msg.String() {
+	case "up", "k":
+		if m.placementCursor[1] > 0 {
+			m.placementCursor[1]--
+		}
+	case "down", "j":
+		if m.placementCursor[1] < boardH-1 {
+			m.placementCursor[1]++
+		}
+	case "left", "h":
+		if m.placementCursor[0] > 0 {
+			m.placementCursor[0]--
+		}
+	case "right", "l":
+		if m.placementCursor[0] < boardW-1 {
+			m.placementCursor[0]++
+		}
+	case "r", "R":
+		// Rotate orientation
+		m.placementVertical = !m.placementVertical
+	case "enter", " ":
+		// Try to place the current region
+		cells := m.getPlacementCells(currentRegion.RackCount)
+		if m.canPlaceAt(cells, boardW, boardH) {
+			// Place the region
+			m.placePlayerRegion(currentRegion, cells)
+
+			// Move to next region
+			m.placementRegionIndex++
+
+			// If all regions placed, start the game
+			if m.placementRegionIndex >= len(m.playerCompany.Regions) {
+				return m.startGameAfterManualPlacement()
+			}
+		}
+	case "esc":
+		m.state = StatePlacementPrompt
+		m.manualPlacement = false
+	}
+	return m, nil
+}
+
+// getPlacementCells returns the cells that would be occupied by the current placement
+func (m AppModel) getPlacementCells(length int) [][2]int {
+	cells := make([][2]int, length)
+	for i := 0; i < length; i++ {
+		if m.placementVertical {
+			cells[i] = [2]int{m.placementCursor[0], m.placementCursor[1] + i}
+		} else {
+			cells[i] = [2]int{m.placementCursor[0] + i, m.placementCursor[1]}
+		}
+	}
+	return cells
+}
+
+// canPlaceAt checks if the cells are valid for placement
+func (m AppModel) canPlaceAt(cells [][2]int, boardW, boardH int) bool {
+	for _, cell := range cells {
+		// Check bounds
+		if cell[0] < 0 || cell[0] >= boardW || cell[1] < 0 || cell[1] >= boardH {
+			return false
+		}
+		// Check if already occupied
+		key := fmt.Sprintf("%d,%d", cell[0], cell[1])
+		if m.placementOccupied[key] {
+			return false
+		}
+	}
+	return true
+}
+
+// placePlayerRegion places a region at the specified cells
+func (m *AppModel) placePlayerRegion(region *game.Region, cells [][2]int) {
+	// Initialize racks for this region
+	region.Racks = make([]*game.Rack, len(cells))
+	region.Placement = cells
+
+	for i, cell := range cells {
+		key := fmt.Sprintf("%d,%d", cell[0], cell[1])
+		m.placementOccupied[key] = true
+
+		region.Racks[i] = &game.Rack{
+			ID:       fmt.Sprintf("%s-rack-%d", region.ID, i),
+			RegionID: region.ID,
+			Position: cell,
+			Capacity: m.cfg.PodsPerRack,
+			Pods:     make([]*game.Pod, 0),
+		}
+	}
+}
+
+// startGameAfterManualPlacement initializes the game after manual placement is complete
+func (m AppModel) startGameAfterManualPlacement() (tea.Model, tea.Cmd) {
+	// Build list of all companies (player already has regions placed)
+	allCompanies := []*game.Company{m.playerCompany}
+	m.enemyCompanies = make([]*game.Company, 0, len(m.selectedEnemies))
+
+	for _, enemyID := range m.selectedEnemies {
+		template, _ := game.LoadCompanyTemplate(enemyID)
+		if template != nil {
+			enemy := game.CompanyFromTemplate(template)
+			enemy.AdjustToConfig(m.cfg.ShipsPerPlayer, m.cfg.RacksPerShip, m.cfg.PodsPerRack)
+			m.enemyCompanies = append(m.enemyCompanies, enemy)
+			allCompanies = append(allCompanies, enemy)
+		}
+	}
+
+	// Legacy single enemy
+	if len(m.enemyCompanies) > 0 {
+		m.enemyCompany = m.enemyCompanies[0]
+	}
+
+	// Create board with manual player placement
+	boardW, boardH := m.cfg.BoardWidthInt(), m.cfg.BoardHeightInt()
+	m.board = NewMultiBoardWithManualPlacement(boardW, boardH, allCompanies, m.placementOccupied)
+
+	// Build opponent list for each AI
+	allIDs := make([]string, 0, len(allCompanies))
+	for _, c := range allCompanies {
+		allIDs = append(allIDs, c.ID)
+	}
+
+	// Create AI for each enemy
+	m.ais = make(map[string]*AIPlayer)
+	for _, enemy := range m.enemyCompanies {
+		opponents := make([]string, 0)
+		for _, id := range allIDs {
+			if id != enemy.ID {
+				opponents = append(opponents, id)
+			}
+		}
+		m.ais[enemy.ID] = NewMultiAIPlayer(enemy.ID, enemy.AIStrategy, boardW, boardH, opponents)
+	}
+
+	// Legacy single AI
+	if len(m.enemyCompanies) > 0 {
+		m.ai = m.ais[m.enemyCompanies[0].ID]
+	}
+
+	// Build turn queue
+	m.turnQueue = []string{m.playerCompany.ID}
+	for _, enemy := range m.enemyCompanies {
+		m.turnQueue = append(m.turnQueue, enemy.ID)
+	}
+	m.currentTurnIndex = 0
+
+	// Start cursor in center of board
+	m.cursor = [2]int{boardW / 2, boardH / 2}
+	vpX := boardW/2 - m.viewW/2
+	vpY := boardH/2 - m.viewH/2
+	if vpX < 0 {
+		vpX = 0
+	}
+	if vpY < 0 {
+		vpY = 0
+	}
+	m.viewport = [2]int{vpX, vpY}
+	m.battleLog = make([]string, 0)
+
+	// Initialize K8s if enabled
+	if m.cfg.EnableRealK8s {
+		if err := m.initK8sClient(); err != nil {
+			m.addBattleLog(fmt.Sprintf("K8s: %v (continuing in simulation mode)", err))
+		} else {
+			m.deployK8sResources()
+			m.startK8sWatcher()
+		}
+	}
+
+	m.state = StateBattle
+	m.isPlayerTurn = true
+	m.turn = 1
+
+	var cmds []tea.Cmd
+	if m.cfg.EnableRealK8s && m.k8sWatcher != nil {
+		cmds = append(cmds, doK8sPoll())
+	}
+
+	if len(cmds) > 0 {
+		return m, tea.Batch(cmds...)
+	}
+	return m, nil
+}
+
 // updateBattle handles the main battle phase
 func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// these keys work even during animation
@@ -956,6 +1254,23 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "c":
 		totalCompanies := 1 + len(m.enemyCompanies)
 		m.serviceViewIndex = (m.serviceViewIndex + 1) % totalCompanies
+		m.serviceScrollOffset = 0 // reset scroll when changing company
+		return m, nil
+	case "tab":
+		// Cycle active panel: 0=board, 1=services, 2=events, 3=fleet stats
+		m.activePanel = (m.activePanel + 1) % 4
+		return m, nil
+	case "shift+tab":
+		// Cycle active panel backwards
+		m.activePanel = (m.activePanel + 3) % 4
+		return m, nil
+	case "[":
+		// Scroll active panel up
+		m.scrollActivePanelUp()
+		return m, nil
+	case "]":
+		// Scroll active panel down
+		m.scrollActivePanelDown()
 		return m, nil
 	case "p":
 		// open pod detail view for current service view company
@@ -1128,10 +1443,29 @@ func (m AppModel) updatePodView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.podViewSvcIndex > 0 {
 			m.podViewSvcIndex--
+			m.podViewPodOffset = 0 // reset pod scroll when changing service
 		}
 	case "down", "j":
 		if m.podViewSvcIndex < len(m.podViewCompany.Services)-1 {
 			m.podViewSvcIndex++
+			m.podViewPodOffset = 0 // reset pod scroll when changing service
+		}
+	case "[":
+		// Scroll pods up
+		if m.podViewPodOffset > 0 {
+			m.podViewPodOffset--
+		}
+	case "]":
+		// Scroll pods down
+		if m.podViewSvcIndex < len(m.podViewCompany.Services) {
+			svc := m.podViewCompany.Services[m.podViewSvcIndex]
+			maxOffset := len(svc.Pods) - 10 // 10 visible at a time
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if m.podViewPodOffset < maxOffset {
+				m.podViewPodOffset++
+			}
 		}
 	case "esc", "p", "q":
 		m.state = StateBattle
@@ -1568,6 +1902,8 @@ func (m AppModel) View() string {
 		view = m.renderEnemyCountSelect()
 	case StateEnemySelect:
 		view = m.renderEnemySelect()
+	case StatePlacementPrompt:
+		view = m.renderPlacementPrompt()
 	case StatePlacement:
 		view = m.renderPlacement()
 	case StateBattle:
@@ -1622,6 +1958,16 @@ func (m AppModel) renderSettings() string {
 	title := m.styles.Title.Render("SETTINGS")
 	subtitle := m.styles.Muted.Render("Configure your game")
 
+	// Show detected hardware tier
+	tierInfo := fmt.Sprintf("Hardware Tier: %s", m.tier.String())
+	if m.systemInfo != nil {
+		tierInfo += fmt.Sprintf(" | RAM: %dGB", m.systemInfo.TotalRAMMB/1024)
+		if m.systemInfo.GPU.Available {
+			tierInfo += fmt.Sprintf(" | GPU: %s", m.systemInfo.GPU.Model)
+		}
+	}
+	tierDisplay := m.styles.Muted.Render(tierInfo)
+
 	var menu string
 	for i, item := range m.settingsItems {
 		if i == m.settingsCursor {
@@ -1634,7 +1980,7 @@ func (m AppModel) renderSettings() string {
 	hint := m.styles.Muted.Render("\n[up/down] navigate  [enter] select  [esc] back")
 
 	return m.styles.App.Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, subtitle, "", menu, hint),
+		lipgloss.JoinVertical(lipgloss.Left, title, subtitle, tierDisplay, "", menu, hint),
 	)
 }
 
@@ -1915,8 +2261,52 @@ func (m AppModel) renderEnemySelect() string {
 	)
 }
 
-// renderPlacement draws the placement phase (auto-place for now)
+// renderPlacementPrompt draws the manual placement prompt
+func (m AppModel) renderPlacementPrompt() string {
+	title := m.styles.Title.Render("DEPLOYMENT PHASE")
+
+	var info string
+	if m.playerCompany != nil {
+		info = fmt.Sprintf("Your fleet: %s\n", m.playerCompany.Name)
+		info += fmt.Sprintf("Regions: %d | Total Racks: %d\n", len(m.playerCompany.Regions), m.playerCompany.TotalRacks())
+	}
+
+	// Show all selected enemies
+	if len(m.selectedEnemies) > 0 {
+		info += fmt.Sprintf("\nEnemy fleets (%d):\n", len(m.selectedEnemies))
+		for _, enemyID := range m.selectedEnemies {
+			template, _ := game.LoadCompanyTemplate(enemyID)
+			if template != nil {
+				info += fmt.Sprintf("  %s\n", template.Name)
+			}
+		}
+	}
+
+	prompt := m.styles.Subtitle.Render("\nWould you like to manually place your ships?")
+	options := "\n  [Y] Yes - Place ships manually\n  [N] No - Auto-deploy (default)"
+
+	hint := m.styles.Muted.Render("\n[y/n] choose  [esc] back")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			"",
+			info,
+			prompt,
+			options,
+			hint,
+		),
+	)
+}
+
+// renderPlacement draws the placement phase
 func (m AppModel) renderPlacement() string {
+	// Manual placement mode
+	if m.manualPlacement {
+		return m.renderManualPlacement()
+	}
+
+	// Auto placement prompt
 	title := m.styles.Title.Render("DEPLOYMENT PHASE")
 
 	var info string
@@ -1945,6 +2335,111 @@ func (m AppModel) renderPlacement() string {
 			title,
 			"",
 			info,
+			hint,
+		),
+	)
+}
+
+// renderManualPlacement draws the manual ship placement screen
+func (m AppModel) renderManualPlacement() string {
+	if m.playerCompany == nil || len(m.playerCompany.Regions) == 0 {
+		return "No regions to place"
+	}
+
+	boardW, boardH := m.cfg.BoardWidthInt(), m.cfg.BoardHeightInt()
+	currentRegion := m.playerCompany.Regions[m.placementRegionIndex]
+
+	title := m.styles.Title.Render("MANUAL SHIP PLACEMENT")
+	progress := m.styles.Subtitle.Render(fmt.Sprintf("Placing region %d/%d: %s (%d racks)",
+		m.placementRegionIndex+1, len(m.playerCompany.Regions), currentRegion.Name, currentRegion.RackCount))
+
+	orientation := "Horizontal"
+	if m.placementVertical {
+		orientation = "Vertical"
+	}
+	orientInfo := fmt.Sprintf("Orientation: %s  |  Position: (%d, %d)",
+		orientation, m.placementCursor[0], m.placementCursor[1])
+
+	// Draw a mini board preview
+	previewSize := 20
+	startX := m.placementCursor[0] - previewSize/2
+	startY := m.placementCursor[1] - previewSize/2
+	if startX < 0 {
+		startX = 0
+	}
+	if startY < 0 {
+		startY = 0
+	}
+	if startX+previewSize > boardW {
+		startX = boardW - previewSize
+	}
+	if startY+previewSize > boardH {
+		startY = boardH - previewSize
+	}
+
+	// Get cells for current placement preview
+	previewCells := m.getPlacementCells(currentRegion.RackCount)
+	canPlace := m.canPlaceAt(previewCells, boardW, boardH)
+
+	// Build preview grid
+	var grid string
+	for y := startY; y < startY+previewSize && y < boardH; y++ {
+		var row string
+		for x := startX; x < startX+previewSize && x < boardW; x++ {
+			key := fmt.Sprintf("%d,%d", x, y)
+			cell := SymWater
+
+			// Check if this cell is occupied by a placed region
+			if m.placementOccupied[key] {
+				cell = m.styles.Ship.Render(SymShip)
+			} else {
+				// Check if this cell is part of the preview
+				isPreview := false
+				for _, pc := range previewCells {
+					if pc[0] == x && pc[1] == y {
+						isPreview = true
+						break
+					}
+				}
+				if isPreview {
+					if canPlace {
+						cell = m.styles.Success.Render("#")
+					} else {
+						cell = m.styles.Error.Render("X")
+					}
+				} else {
+					cell = m.styles.Water.Render(SymWater)
+				}
+			}
+
+			// Highlight cursor position
+			if x == m.placementCursor[0] && y == m.placementCursor[1] {
+				cell = m.styles.Cursor.Render(cell)
+			}
+
+			row += cell + " "
+		}
+		grid += row + "\n"
+	}
+
+	// Placement status
+	status := ""
+	if canPlace {
+		status = m.styles.Success.Render("Valid placement - press [enter] to place")
+	} else {
+		status = m.styles.Error.Render("Invalid placement - out of bounds or overlapping")
+	}
+
+	hint := m.styles.Muted.Render("\n[arrows] move  [r] rotate  [enter] place  [esc] cancel")
+
+	return m.styles.App.Render(
+		lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			progress,
+			orientInfo,
+			"",
+			grid,
+			status,
 			hint,
 		),
 	)
@@ -2036,10 +2531,31 @@ func (m AppModel) renderShipView() string {
 		fmt.Sprintf("SHIP VIEW - %s  [VIEW 2/5]", m.playerCompany.Name),
 	)
 
-	var content string
-	content += m.styles.Subtitle.Render("YOUR REGIONS (SHIPS):") + "\n\n"
+	regionCount := len(m.playerCompany.Regions)
+	scrollInfo := fmt.Sprintf(" (%d regions)", regionCount)
+	content := m.styles.Subtitle.Render("YOUR REGIONS (SHIPS):") + m.styles.Muted.Render(scrollInfo) + "\n\n"
 
-	for i, region := range m.playerCompany.Regions {
+	// Calculate visible regions with scrolling
+	maxVisible := 6
+	startIdx := m.shipViewOffset
+	if startIdx > regionCount-maxVisible {
+		startIdx = regionCount - maxVisible
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	endIdx := startIdx + maxVisible
+	if endIdx > regionCount {
+		endIdx = regionCount
+	}
+
+	// Scroll indicator (up)
+	if startIdx > 0 {
+		content += m.styles.Muted.Render("  ▲ more regions above\n")
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		region := m.playerCompany.Regions[i]
 		status := "ACTIVE"
 		style := m.styles.Success
 		if region.IsDestroyed {
@@ -2068,9 +2584,27 @@ func (m AppModel) renderShipView() string {
 			style.Render(status))
 		content += line + "\n"
 
-		// show racks if selected
+		// show racks if selected (with scrolling for many racks)
 		if region.ID == m.selectedShipID {
-			for _, rack := range region.Racks {
+			rackCount := len(region.Racks)
+			maxRacksVisible := 4
+			rackStart := m.rackViewOffset
+			if rackStart > rackCount-maxRacksVisible {
+				rackStart = rackCount - maxRacksVisible
+			}
+			if rackStart < 0 {
+				rackStart = 0
+			}
+			rackEnd := rackStart + maxRacksVisible
+			if rackEnd > rackCount {
+				rackEnd = rackCount
+			}
+
+			if rackStart > 0 {
+				content += m.styles.Muted.Render("    ▲ more racks\n")
+			}
+			for ri := rackStart; ri < rackEnd; ri++ {
+				rack := region.Racks[ri]
 				rackStatus := "OK"
 				rackStyle := m.styles.Success
 				if rack.IsDestroyed {
@@ -2081,15 +2615,18 @@ func (m AppModel) renderShipView() string {
 					rackStyle.Render(rackStatus), rack.ID,
 					rack.Position[0], rack.Position[1], len(rack.Pods))
 			}
-		}
-
-		// navigation hint on first ship
-		if i == 0 {
-			content += "\n"
+			if rackEnd < rackCount {
+				content += m.styles.Muted.Render("    ▼ more racks\n")
+			}
 		}
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select ship  [1-5] change view  [i] info  [q] quit")
+	// Scroll indicator (down)
+	if endIdx < regionCount {
+		content += m.styles.Muted.Render("  ▼ more regions below\n")
+	}
+
+	hint := m.styles.Muted.Render("\n[up/down] select ship  [[/]] scroll  [1-5] change view  [i] info  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -2119,8 +2656,28 @@ func (m AppModel) renderRackView() string {
 		content += fmt.Sprintf("Status: %s\n", statusStyle.Render(status))
 		content += fmt.Sprintf("Capacity: %d pods\n\n", len(rack.Pods))
 
-		content += m.styles.Subtitle.Render("PODS:") + "\n"
-		for _, pod := range rack.Pods {
+		podCount := len(rack.Pods)
+		content += m.styles.Subtitle.Render(fmt.Sprintf("PODS (%d):", podCount)) + "\n"
+
+		// Scrolling for pods within rack
+		maxPodsVisible := 5
+		podStart := m.podViewPodOffset
+		if podStart > podCount-maxPodsVisible {
+			podStart = podCount - maxPodsVisible
+		}
+		if podStart < 0 {
+			podStart = 0
+		}
+		podEnd := podStart + maxPodsVisible
+		if podEnd > podCount {
+			podEnd = podCount
+		}
+
+		if podStart > 0 {
+			content += m.styles.Muted.Render("  ▲ more pods\n")
+		}
+		for pi := podStart; pi < podEnd; pi++ {
+			pod := rack.Pods[pi]
 			podStatus := "Running"
 			podStyle := m.styles.Success
 			switch pod.Status {
@@ -2134,28 +2691,58 @@ func (m AppModel) renderRackView() string {
 			content += fmt.Sprintf("  [%s] %s (svc: %s)\n",
 				podStyle.Render(podStatus[:1]), pod.ID, pod.ServiceID)
 		}
+		if podEnd < podCount {
+			content += m.styles.Muted.Render("  ▼ more pods\n")
+		}
 	} else {
 		content = m.styles.Muted.Render("No rack selected. Press 2 to select a ship first.")
 	}
 
-	// show all racks for navigation
-	content += "\n" + m.styles.Subtitle.Render("ALL RACKS:") + "\n"
+	// Count total racks for scrolling
+	var allRacks []*game.Rack
 	for _, region := range m.playerCompany.Regions {
-		content += fmt.Sprintf("  %s:\n", region.Name)
-		for _, rack := range region.Racks {
-			selected := "  "
-			if rack.ID == m.selectedRackID {
-				selected = "> "
-			}
-			status := "OK"
-			if rack.IsDestroyed {
-				status = "HIT"
-			}
-			content += fmt.Sprintf("  %s[%s] %s\n", selected, status, rack.ID)
-		}
+		allRacks = append(allRacks, region.Racks...)
+	}
+	rackCount := len(allRacks)
+
+	content += "\n" + m.styles.Subtitle.Render(fmt.Sprintf("ALL RACKS (%d):", rackCount)) + "\n"
+
+	// Scrolling for all racks list
+	maxRacksVisible := 8
+	rackStart := m.rackViewOffset
+	if rackStart > rackCount-maxRacksVisible {
+		rackStart = rackCount - maxRacksVisible
+	}
+	if rackStart < 0 {
+		rackStart = 0
+	}
+	rackEnd := rackStart + maxRacksVisible
+	if rackEnd > rackCount {
+		rackEnd = rackCount
 	}
 
-	hint := m.styles.Muted.Render("\n[up/down] select rack  [1-5] change view  [i] info  [q] quit")
+	if rackStart > 0 {
+		content += m.styles.Muted.Render("  ▲ more racks above\n")
+	}
+	for ri := rackStart; ri < rackEnd; ri++ {
+		rack := allRacks[ri]
+		selected := "  "
+		if rack.ID == m.selectedRackID {
+			selected = "> "
+		}
+		status := "OK"
+		statusStyle := m.styles.Success
+		if rack.IsDestroyed {
+			status = "HIT"
+			statusStyle = m.styles.Error
+		}
+		content += fmt.Sprintf("%s[%s] %s\n", selected, statusStyle.Render(status), rack.ID)
+	}
+	if rackEnd < rackCount {
+		content += m.styles.Muted.Render("  ▼ more racks below\n")
+	}
+
+	hint := m.styles.Muted.Render("\n[up/down] select rack  [[/]] scroll  [1-5] change view  [i] info  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, "", content, hint),
@@ -2647,12 +3234,13 @@ func (m AppModel) renderSimpleBoard() string {
 	hoverInfo := m.getHoverInfo()
 
 	// legend with company colors
-	legend := fmt.Sprintf("%s=Water  %s=Miss  %s=Hit  %s=Yours  %s=Destroyed",
+	legend := fmt.Sprintf("%s=Water  %s=Miss  %s=Hit  %s=Yours  %s=Destroyed  %s=Sunk",
 		m.styles.Water.Render(SymWater),
 		m.styles.Miss.Render(SymMiss),
 		m.styles.Hit.Render(SymHit),
 		CompanyStyle("player").Render(SymShip),
-		m.styles.Destroyed.Render(SymDestroyed))
+		m.styles.Destroyed.Render(SymDestroyed),
+		m.styles.Sunk.Render(SymSunk))
 
 	// add enemy company colors to legend
 	for _, enemy := range m.enemyCompanies {
@@ -2687,8 +3275,14 @@ func (m AppModel) getUnifiedCellDisplay(x, y int) string {
 	playerState := m.board.GetEnemyCellState(x, y)
 	enemyState := m.board.GetPlayerCellState(x, y)
 
+	// Check if this cell is in a completely destroyed region (sunk battleship)
+	isRegionDestroyed := m.board.IsRegionDestroyedAt(x, y)
+
 	// show hits/misses first
 	if playerState == CellHit || playerState == CellDestroyed {
+		if isRegionDestroyed {
+			return m.styles.Sunk.Render(SymSunk)
+		}
 		if playerState == CellDestroyed {
 			return m.styles.Destroyed.Render(SymDestroyed)
 		}
@@ -2700,6 +3294,9 @@ func (m AppModel) getUnifiedCellDisplay(x, y int) string {
 	}
 
 	if enemyState == CellHit || enemyState == CellDestroyed {
+		if isRegionDestroyed {
+			return m.styles.Sunk.Render(SymSunk)
+		}
 		if enemyState == CellDestroyed {
 			return m.styles.Destroyed.Render(SymDestroyed)
 		}
@@ -2712,6 +3309,10 @@ func (m AppModel) getUnifiedCellDisplay(x, y int) string {
 
 	// show player ships with player color
 	if enemyState == CellShip {
+		// If region is destroyed, show sunk symbol
+		if isRegionDestroyed {
+			return m.styles.Sunk.Render(SymSunk)
+		}
 		return CompanyStyle("player").Render(SymShip)
 	}
 
@@ -2719,6 +3320,10 @@ func (m AppModel) getUnifiedCellDisplay(x, y int) string {
 	if m.debugMode {
 		ownerID := m.board.GetCellOwner(x, y)
 		if ownerID != "" && ownerID != "player" {
+			// If region is destroyed, show sunk symbol
+			if isRegionDestroyed {
+				return m.styles.Sunk.Render(SymSunk)
+			}
 			return CompanyStyle(ownerID).Render(SymShip)
 		}
 	}
@@ -2745,12 +3350,37 @@ func (m AppModel) renderServiceStatus() string {
 		return ""
 	}
 
-	// service status section with navigation hint
+	// service status section with navigation hint and active indicator
 	navHint := fmt.Sprintf(" [C] %d/%d", m.serviceViewIndex+1, totalCompanies)
-	serviceTitle := m.styles.Subtitle.Render(titleLabel) + m.styles.Muted.Render(navHint)
+	activeIndicator := ""
+	if m.activePanel == 1 {
+		activeIndicator = " [*]"
+	}
+	serviceTitle := m.styles.Subtitle.Render(titleLabel) + m.styles.Muted.Render(navHint) + m.styles.Success.Render(activeIndicator)
+
+	// Calculate visible services with scrolling
+	maxVisible := 5
+	serviceCount := len(viewCompany.Services)
+	startIdx := m.serviceScrollOffset
+	if startIdx > serviceCount-maxVisible {
+		startIdx = serviceCount - maxVisible
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	endIdx := startIdx + maxVisible
+	if endIdx > serviceCount {
+		endIdx = serviceCount
+	}
 
 	var services string
-	for _, svc := range viewCompany.Services {
+	// Scroll indicator (up)
+	if startIdx > 0 {
+		services += m.styles.Muted.Render("  ▲ more above\n")
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		svc := viewCompany.Services[i]
 		healthy := 0
 		total := len(svc.Pods)
 		for _, p := range svc.Pods {
@@ -2778,16 +3408,41 @@ func (m AppModel) renderServiceStatus() string {
 		services += status + "\n"
 	}
 
-	// events section
-	eventTitle := m.styles.Subtitle.Render("K8S EVENTS")
+	// Scroll indicator (down)
+	if endIdx < serviceCount {
+		services += m.styles.Muted.Render("  ▼ more below\n")
+	}
+
+	// events section with active indicator
+	eventsActiveIndicator := ""
+	if m.activePanel == 2 {
+		eventsActiveIndicator = " [*]"
+	}
+	eventTitle := m.styles.Subtitle.Render("K8S EVENTS") + m.styles.Success.Render(eventsActiveIndicator)
+
 	var events string
 	if m.board != nil && len(m.board.Events) > 0 {
-		// show last 5 events
-		start := len(m.board.Events) - 5
-		if start < 0 {
-			start = 0
+		// Calculate visible events with scrolling
+		eventCount := len(m.board.Events)
+		evStartIdx := m.eventsScrollOffset
+		if evStartIdx > eventCount-5 {
+			evStartIdx = eventCount - 5
 		}
-		for _, evt := range m.board.Events[start:] {
+		if evStartIdx < 0 {
+			evStartIdx = 0
+		}
+		evEndIdx := evStartIdx + 5
+		if evEndIdx > eventCount {
+			evEndIdx = eventCount
+		}
+
+		// Scroll indicator (up)
+		if evStartIdx > 0 {
+			events += m.styles.Muted.Render("▲ more\n")
+		}
+
+		for i := evStartIdx; i < evEndIdx; i++ {
+			evt := m.board.Events[i]
 			style := m.styles.Normal
 			prefix := "[ ]"
 			switch evt.Type {
@@ -2807,12 +3462,22 @@ func (m AppModel) renderServiceStatus() string {
 			}
 			events += fmt.Sprintf("%s %s\n", prefix, style.Render(msg))
 		}
+
+		// Scroll indicator (down)
+		if evEndIdx < eventCount {
+			events += m.styles.Muted.Render("▼ more\n")
+		}
 	} else {
 		events = m.styles.Muted.Render("No events yet...")
 	}
 
-	// fleet stats for all companies
-	statsTitle := m.styles.Subtitle.Render("FLEET STATUS")
+	// fleet stats / battle log with active indicator
+	logActiveIndicator := ""
+	if m.activePanel == 3 {
+		logActiveIndicator = " [*]"
+	}
+	statsTitle := m.styles.Subtitle.Render("FLEET STATUS") + m.styles.Success.Render(logActiveIndicator)
+
 	var stats string
 	if m.board != nil {
 		// Player stats
@@ -2839,6 +3504,38 @@ func (m AppModel) renderServiceStatus() string {
 		}
 	}
 
+	// Battle log with scrolling
+	var battleLogStr string
+	if len(m.battleLog) > 0 {
+		battleLogStr = "\n" + m.styles.Muted.Render("BATTLE LOG") + "\n"
+		logCount := len(m.battleLog)
+		logStartIdx := m.battleLogOffset
+		if logStartIdx > logCount-3 {
+			logStartIdx = logCount - 3
+		}
+		if logStartIdx < 0 {
+			logStartIdx = 0
+		}
+		logEndIdx := logStartIdx + 3
+		if logEndIdx > logCount {
+			logEndIdx = logCount
+		}
+
+		if logStartIdx > 0 {
+			battleLogStr += m.styles.Muted.Render("▲\n")
+		}
+		for i := logStartIdx; i < logEndIdx; i++ {
+			msg := m.battleLog[i]
+			if len(msg) > 28 {
+				msg = msg[:28] + ".."
+			}
+			battleLogStr += m.styles.Muted.Render(msg) + "\n"
+		}
+		if logEndIdx < logCount {
+			battleLogStr += m.styles.Muted.Render("▼\n")
+		}
+	}
+
 	// affinity legend
 	legendTitle := m.styles.Subtitle.Render("AFFINITY LEGEND")
 	legend := m.styles.Muted.Render("[!]=critical  [~]=spread\n[o]=preferred [-]=flexible")
@@ -2847,6 +3544,9 @@ func (m AppModel) renderServiceStatus() string {
 	k8sStatus := m.renderK8sStatus()
 	k8sEvents := m.renderK8sEvents()
 
+	// Panel navigation hint
+	panelHint := m.styles.Muted.Render(fmt.Sprintf("\n[tab] panel:%s [/] scroll", m.getPanelName()))
+
 	return m.styles.Sidebar.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			serviceTitle, services,
@@ -2854,10 +3554,12 @@ func (m AppModel) renderServiceStatus() string {
 			eventTitle, events,
 			"",
 			statsTitle, m.styles.Muted.Render(stats),
+			battleLogStr,
 			"",
 			legendTitle, legend,
 			"",
 			k8sStatus, k8sEvents,
+			panelHint,
 		),
 	)
 }
@@ -2912,6 +3614,144 @@ func (m AppModel) renderGameOver() string {
 }
 
 // helper functions
+
+// scrollActivePanelUp scrolls the active panel up
+func (m *AppModel) scrollActivePanelUp() {
+	// Handle view-level scrolling for ship/rack/pod views
+	switch m.viewLevel {
+	case ViewShip:
+		if m.shipViewOffset > 0 {
+			m.shipViewOffset--
+		}
+		return
+	case ViewRack:
+		if m.rackViewOffset > 0 {
+			m.rackViewOffset--
+		}
+		return
+	case ViewRackLayout:
+		if m.podViewPodOffset > 0 {
+			m.podViewPodOffset--
+		}
+		return
+	}
+
+	// Handle panel scrolling for battle view
+	switch m.activePanel {
+	case 1: // services panel
+		if m.serviceScrollOffset > 0 {
+			m.serviceScrollOffset--
+		}
+	case 2: // events panel
+		if m.eventsScrollOffset > 0 {
+			m.eventsScrollOffset--
+		}
+	case 3: // fleet stats / battle log
+		if m.battleLogOffset > 0 {
+			m.battleLogOffset--
+		}
+	}
+}
+
+// scrollActivePanelDown scrolls the active panel down
+func (m *AppModel) scrollActivePanelDown() {
+	// Handle view-level scrolling for ship/rack/pod views
+	switch m.viewLevel {
+	case ViewShip:
+		if m.playerCompany != nil {
+			maxOffset := len(m.playerCompany.Regions) - 6 // 6 visible at a time
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if m.shipViewOffset < maxOffset {
+				m.shipViewOffset++
+			}
+		}
+		return
+	case ViewRack:
+		// Count total racks
+		var rackCount int
+		if m.playerCompany != nil {
+			for _, region := range m.playerCompany.Regions {
+				rackCount += len(region.Racks)
+			}
+		}
+		maxOffset := rackCount - 8 // 8 visible at a time
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.rackViewOffset < maxOffset {
+			m.rackViewOffset++
+		}
+		return
+	case ViewRackLayout:
+		// Handle pod view scrolling
+		if m.podViewCompany != nil && m.podViewSvcIndex < len(m.podViewCompany.Services) {
+			svc := m.podViewCompany.Services[m.podViewSvcIndex]
+			maxOffset := len(svc.Pods) - 10 // 10 visible at a time
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if m.podViewPodOffset < maxOffset {
+				m.podViewPodOffset++
+			}
+		}
+		return
+	}
+
+	// Handle panel scrolling for battle view
+	switch m.activePanel {
+	case 1: // services panel
+		// Get current company's service count
+		var serviceCount int
+		if m.serviceViewIndex == 0 && m.playerCompany != nil {
+			serviceCount = len(m.playerCompany.Services)
+		} else if m.serviceViewIndex > 0 && m.serviceViewIndex <= len(m.enemyCompanies) {
+			serviceCount = len(m.enemyCompanies[m.serviceViewIndex-1].Services)
+		}
+		maxOffset := serviceCount - 5 // show 5 at a time
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.serviceScrollOffset < maxOffset {
+			m.serviceScrollOffset++
+		}
+	case 2: // events panel
+		if m.board != nil {
+			maxOffset := len(m.board.Events) - 5
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if m.eventsScrollOffset < maxOffset {
+				m.eventsScrollOffset++
+			}
+		}
+	case 3: // battle log
+		maxOffset := len(m.battleLog) - 5
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.battleLogOffset < maxOffset {
+			m.battleLogOffset++
+		}
+	}
+}
+
+// getPanelName returns the name of the active panel for display
+func (m AppModel) getPanelName() string {
+	switch m.activePanel {
+	case 0:
+		return "BOARD"
+	case 1:
+		return "SERVICES"
+	case 2:
+		return "EVENTS"
+	case 3:
+		return "LOG"
+	default:
+		return "BOARD"
+	}
+}
 
 func (m *AppModel) pickRandomEnemy(exclude string) string {
 	for _, id := range m.companies {
@@ -3087,9 +3927,27 @@ func (m AppModel) renderPodView() string {
 
 	title := m.styles.Title.Render(fmt.Sprintf("POD VIEW - %s", m.podViewCompany.Name))
 
-	// Service list on left
+	// Service list on left with scrolling
+	serviceCount := len(m.podViewCompany.Services)
+	maxServicesVisible := 8
+	svcStart := m.serviceScrollOffset
+	if svcStart > serviceCount-maxServicesVisible {
+		svcStart = serviceCount - maxServicesVisible
+	}
+	if svcStart < 0 {
+		svcStart = 0
+	}
+	svcEnd := svcStart + maxServicesVisible
+	if svcEnd > serviceCount {
+		svcEnd = serviceCount
+	}
+
 	var serviceList string
-	for i, svc := range m.podViewCompany.Services {
+	if svcStart > 0 {
+		serviceList += m.styles.Muted.Render("  ▲ more services\n")
+	}
+	for i := svcStart; i < svcEnd; i++ {
+		svc := m.podViewCompany.Services[i]
 		running := 0
 		pending := 0
 		terminated := 0
@@ -3104,21 +3962,32 @@ func (m AppModel) renderPodView() string {
 			}
 		}
 
-		status := fmt.Sprintf("%-14s R:%d P:%d T:%d", svc.Name, running, pending, terminated)
+		name := svc.Name
+		if len(name) > 12 {
+			name = name[:12]
+		}
+		status := fmt.Sprintf("%-12s R:%d P:%d T:%d", name, running, pending, terminated)
 		if i == m.podViewSvcIndex {
 			serviceList += m.styles.MenuItemSelected.Render("> "+status) + "\n"
 		} else {
 			serviceList += m.styles.MenuItem.Render("  "+status) + "\n"
 		}
 	}
+	if svcEnd < serviceCount {
+		serviceList += m.styles.Muted.Render("  ▼ more services\n")
+	}
 
 	// Selected service details
 	svc := m.podViewCompany.Services[m.podViewSvcIndex]
-	detailTitle := m.styles.Subtitle.Render(fmt.Sprintf("SERVICE: %s", svc.Name))
+	detailTitle := m.styles.Subtitle.Render(fmt.Sprintf("SERVICE: %s (%d pods)", svc.Name, len(svc.Pods)))
 
-	// Group pods by region/rack
+	// Group pods by region/rack for organized display
 	podsByRegion := make(map[string][]*game.Pod)
+	var regionOrder []string // maintain order
 	for _, p := range svc.Pods {
+		if _, exists := podsByRegion[p.RegionID]; !exists {
+			regionOrder = append(regionOrder, p.RegionID)
+		}
 		podsByRegion[p.RegionID] = append(podsByRegion[p.RegionID], p)
 	}
 
@@ -3126,63 +3995,91 @@ func (m AppModel) renderPodView() string {
 	podDetail += fmt.Sprintf("Affinity: %s | CanFailover: %v\n", svc.Affinity, svc.CanFailover)
 	podDetail += fmt.Sprintf("Criticality: %s\n\n", svc.Criticality)
 
-	// Show pods per region
-	for regionID, pods := range podsByRegion {
-		// Find region info
-		var regionName string
-		var regionDestroyed bool
-		for _, r := range m.podViewCompany.Regions {
-			if r.ID == regionID {
-				regionName = r.Name
-				regionDestroyed = r.IsDestroyed
-				break
-			}
-		}
-		if regionName == "" {
-			regionName = regionID
-		}
+	// Show pods per region with scrolling
+	totalPods := len(svc.Pods)
+	podDetail += m.styles.Subtitle.Render(fmt.Sprintf("PODS (%d total):\n", totalPods))
 
-		regionStatus := ""
-		if regionDestroyed {
-			regionStatus = m.styles.Error.Render(" [DESTROYED]")
-		}
-		podDetail += m.styles.Subtitle.Render(fmt.Sprintf("Region: %s%s\n", regionName, regionStatus))
+	// Flatten pods for scrolling
+	var allPods []*game.Pod
+	for _, regionID := range regionOrder {
+		allPods = append(allPods, podsByRegion[regionID]...)
+	}
 
-		// Group pods by rack
-		podsByRack := make(map[string][]*game.Pod)
-		for _, p := range pods {
-			podsByRack[p.RackID] = append(podsByRack[p.RackID], p)
-		}
+	maxPodsVisible := 10
+	podStart := m.podViewPodOffset
+	if podStart > len(allPods)-maxPodsVisible {
+		podStart = len(allPods) - maxPodsVisible
+	}
+	if podStart < 0 {
+		podStart = 0
+	}
+	podEnd := podStart + maxPodsVisible
+	if podEnd > len(allPods) {
+		podEnd = len(allPods)
+	}
 
-		for rackID, rackPods := range podsByRack {
-			rackStatus := ""
-			// Check if rack is destroyed (find rack in region)
+	if podStart > 0 {
+		podDetail += m.styles.Muted.Render("  ▲ more pods above\n")
+	}
+
+	currentRegion := ""
+	for pi := podStart; pi < podEnd; pi++ {
+		p := allPods[pi]
+
+		// Show region header when region changes
+		if p.RegionID != currentRegion {
+			currentRegion = p.RegionID
+			var regionName string
+			var regionDestroyed bool
 			for _, r := range m.podViewCompany.Regions {
-				if r.ID == regionID {
-					for _, rack := range r.Racks {
-						if rack.ID == rackID && rack.IsDestroyed {
-							rackStatus = m.styles.Error.Render(" [HIT]")
-						}
+				if r.ID == p.RegionID {
+					regionName = r.Name
+					regionDestroyed = r.IsDestroyed
+					break
+				}
+			}
+			if regionName == "" {
+				regionName = p.RegionID
+			}
+			regionStatus := ""
+			if regionDestroyed {
+				regionStatus = m.styles.Error.Render(" [DESTROYED]")
+			}
+			podDetail += m.styles.Muted.Render(fmt.Sprintf("  -- %s%s --\n", regionName, regionStatus))
+		}
+
+		// Check rack status
+		rackHit := ""
+		for _, r := range m.podViewCompany.Regions {
+			if r.ID == p.RegionID {
+				for _, rack := range r.Racks {
+					if rack.ID == p.RackID && rack.IsDestroyed {
+						rackHit = "[HIT]"
 					}
 				}
 			}
-
-			podDetail += fmt.Sprintf("  Rack %s%s:\n", rackID, rackStatus)
-			for _, p := range rackPods {
-				statusStyle := m.styles.Success
-				statusChar := "+"
-				switch p.Status {
-				case game.PodPending:
-					statusStyle = m.styles.Warning
-					statusChar = "!"
-				case game.PodTerminated:
-					statusStyle = m.styles.Error
-					statusChar = "x"
-				}
-				podDetail += fmt.Sprintf("    [%s] %s\n", statusStyle.Render(statusChar), p.ID)
-			}
 		}
-		podDetail += "\n"
+
+		statusStyle := m.styles.Success
+		statusChar := "+"
+		switch p.Status {
+		case game.PodPending:
+			statusStyle = m.styles.Warning
+			statusChar = "!"
+		case game.PodTerminated:
+			statusStyle = m.styles.Error
+			statusChar = "x"
+		}
+
+		podID := p.ID
+		if len(podID) > 20 {
+			podID = podID[:20] + "..."
+		}
+		podDetail += fmt.Sprintf("  [%s] %s %s\n", statusStyle.Render(statusChar), podID, m.styles.Error.Render(rackHit))
+	}
+
+	if podEnd < len(allPods) {
+		podDetail += m.styles.Muted.Render("  ▼ more pods below\n")
 	}
 
 	// Rescaling explanation
@@ -3205,7 +4102,7 @@ func (m AppModel) renderPodView() string {
 		rescaleInfo += m.styles.Error.Render("\nFailover DISABLED: Service cannot migrate between regions.\n")
 	}
 
-	controls := m.styles.Muted.Render("\n[up/down] select service  [esc/p] return to battle")
+	controls := m.styles.Muted.Render("\n[up/down] select service  [[/]] scroll pods  [esc/p] return to battle")
 
 	left := lipgloss.JoinVertical(lipgloss.Left,
 		m.styles.Subtitle.Render("SERVICES"),

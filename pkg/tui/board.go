@@ -8,13 +8,15 @@ import (
 
 // ShotResult tracks what happened when a cell was attacked
 type ShotResult struct {
-	Hit        bool
-	Coord      [2]int
-	HitRack    *game.Rack
-	HitPod     *game.Pod
-	KilledPod  bool
-	KilledRack bool
-	Message    string
+	Hit          bool
+	Coord        [2]int
+	HitRack      *game.Rack
+	HitPod       *game.Pod
+	KilledPod    bool
+	KilledRack   bool
+	KilledRegion bool   // true if this attack destroyed the entire region
+	RegionName   string // name of the destroyed region (for "sunk battleship" message)
+	Message      string
 }
 
 // Board represents the game board with all fleets placed
@@ -64,6 +66,88 @@ func NewBoard(width, height int, player, enemy *game.Company) *Board {
 		enemy.ID = "enemy"
 	}
 	return NewMultiBoard(width, height, []*game.Company{player, enemy})
+}
+
+// NewMultiBoardWithManualPlacement creates a board where the first company (player) has already been placed
+func NewMultiBoardWithManualPlacement(width, height int, companies []*game.Company, playerOccupied map[string]bool) *Board {
+	b := &Board{
+		Width:       width,
+		Height:      height,
+		Fleets:      make(map[string]*Fleet),
+		Shots:       make(map[string]map[string]*ShotResult),
+		CellOwner:   make(map[string]string),
+		PlayerShots: make(map[string]*ShotResult),
+		EnemyShots:  make(map[string]*ShotResult),
+		Events:      make([]game.GameEvent, 0),
+	}
+
+	// Initialize shots map for each company
+	for _, company := range companies {
+		b.Shots[company.ID] = make(map[string]*ShotResult)
+	}
+
+	// Start with player's occupied cells
+	occupied := make(map[string]bool)
+	for k, v := range playerOccupied {
+		occupied[k] = v
+	}
+
+	// Place all fleets
+	for i, company := range companies {
+		var fleet *Fleet
+		if i == 0 {
+			// Player fleet - already placed manually
+			fleet = b.buildFleetFromManualPlacement(company)
+		} else {
+			// Enemy fleets - auto-place
+			fleet = b.placeFleet(company, occupied)
+		}
+		b.Fleets[company.ID] = fleet
+
+		// Track cell ownership for rendering
+		for _, region := range fleet.Regions {
+			for _, rack := range region.Racks {
+				key := fmt.Sprintf("%d,%d", rack.Position[0], rack.Position[1])
+				b.CellOwner[key] = company.ID
+			}
+		}
+
+		b.initPods(fleet)
+
+		if i == 0 {
+			b.PlayerFleet = fleet
+		} else if i == 1 {
+			b.EnemyFleet = fleet
+		}
+	}
+
+	return b
+}
+
+// buildFleetFromManualPlacement creates a fleet from manually placed regions
+func (b *Board) buildFleetFromManualPlacement(company *game.Company) *Fleet {
+	fleet := &Fleet{
+		Company: company,
+		Regions: make([]*PlacedRegion, len(company.Regions)),
+	}
+
+	for i, region := range company.Regions {
+		placed := &PlacedRegion{
+			Region: region,
+			Racks:  make([]*PlacedRack, len(region.Racks)),
+		}
+
+		for j, rack := range region.Racks {
+			placed.Racks[j] = &PlacedRack{
+				Rack:     rack,
+				Position: rack.Position,
+			}
+		}
+
+		fleet.Regions[i] = placed
+	}
+
+	return fleet
 }
 
 // NewMultiBoard creates a game board with multiple companies
@@ -393,6 +477,31 @@ func (b *Board) AttackMulti(x, y int, attackerID, targetID string) (*ShotResult,
 				Message:  fmt.Sprintf("Rack %s destroyed", rack.ID),
 				RegionID: rack.RegionID,
 			})
+
+			// Check if entire region is destroyed (all racks in region destroyed)
+			for _, region := range targetFleet.Company.Regions {
+				if region.ID == rack.RegionID {
+					allRacksDestroyed := true
+					for _, r := range region.Racks {
+						if !r.IsDestroyed {
+							allRacksDestroyed = false
+							break
+						}
+					}
+					if allRacksDestroyed && len(region.Racks) > 0 {
+						region.IsDestroyed = true
+						result.KilledRegion = true
+						result.RegionName = region.Name
+						events = append(events, game.GameEvent{
+							Type:     "Warning",
+							Reason:   "RegionDestroyed",
+							Message:  fmt.Sprintf("You've sunk my battleship! %s's %s region destroyed!", targetFleet.Company.Name, region.Name),
+							RegionID: region.ID,
+						})
+					}
+					break
+				}
+			}
 		}
 
 		result.Message = fmt.Sprintf("Hit! %s's Rack %s", targetFleet.Company.Name, rack.ID)
@@ -573,6 +682,29 @@ func (b *Board) HasShipAt(x, y int) bool {
 	return b.CellOwner[key] != ""
 }
 
+// IsRegionDestroyedAt returns true if the cell at (x, y) is in a completely destroyed region
+func (b *Board) IsRegionDestroyedAt(x, y int) bool {
+	key := fmt.Sprintf("%d,%d", x, y)
+	ownerID := b.CellOwner[key]
+	if ownerID == "" {
+		return false
+	}
+
+	fleet := b.Fleets[ownerID]
+	if fleet == nil || fleet.Company == nil {
+		return false
+	}
+
+	for _, region := range fleet.Company.Regions {
+		for _, rack := range region.Racks {
+			if rack.Position[0] == x && rack.Position[1] == y {
+				return region.IsDestroyed
+			}
+		}
+	}
+	return false
+}
+
 // ServiceOnRack contains info about a service's pods on a specific rack
 type ServiceOnRack struct {
 	ServiceID   string
@@ -585,20 +717,21 @@ type ServiceOnRack struct {
 
 // CellInfo contains details about what's at a cell (for hover display)
 type CellInfo struct {
-	Empty          bool
-	OwnerID        string
-	OwnerName      string
-	RegionID       string
-	RegionName     string
-	RackID         string
-	IsDestroyed    bool
-	PodCount       int
-	RunningPods    int
-	ServiceIDs     []string
-	ServicesOnRack []ServiceOnRack // detailed service info
-	WasHit         bool
-	CanAttack      bool // true if not your own and not already hit by you
-	HasCritical    bool // true if rack has hard-affinity (critical) services
+	Empty            bool
+	OwnerID          string
+	OwnerName        string
+	RegionID         string
+	RegionName       string
+	RackID           string
+	IsDestroyed      bool
+	IsRegionDestroyed bool // true if the entire region is destroyed
+	PodCount         int
+	RunningPods      int
+	ServiceIDs       []string
+	ServicesOnRack   []ServiceOnRack // detailed service info
+	WasHit           bool
+	CanAttack        bool // true if not your own and not already hit by you
+	HasCritical      bool // true if rack has hard-affinity (critical) services
 }
 
 // GetCellInfo returns detailed info about what's at (x, y) from the attacker's perspective
@@ -628,6 +761,7 @@ func (b *Board) GetCellInfo(x, y int, attackerID string) CellInfo {
 				info.RegionName = region.Name
 				info.RackID = rack.ID
 				info.IsDestroyed = rack.IsDestroyed
+				info.IsRegionDestroyed = region.IsDestroyed
 				info.PodCount = len(rack.Pods)
 
 				svcPods := make(map[string]*ServiceOnRack)

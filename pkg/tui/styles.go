@@ -45,6 +45,7 @@ type Styles struct {
 	Ship      lipgloss.Style
 	Cursor    lipgloss.Style
 	Destroyed lipgloss.Style
+	Sunk      lipgloss.Style // entire region destroyed
 
 	// text
 	Title      lipgloss.Style
@@ -129,6 +130,11 @@ func DefaultStyles() *Styles {
 			Foreground(colorDanger).
 			Bold(true),
 
+		Sunk: lipgloss.NewStyle().
+			Foreground(colorDanger).
+			Background(lipgloss.Color("52")). // dark red background
+			Bold(true),
+
 		Title: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorPrimary),
@@ -197,6 +203,7 @@ const (
 	SymHit       = "X"
 	SymShip      = "#"
 	SymDestroyed = "!"
+	SymSunk      = "≡" // entire region destroyed (sunk battleship)
 )
 
 // CompanyColor returns the color for a company ID
