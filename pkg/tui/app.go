@@ -95,12 +95,19 @@ const (
 	ViewRackLayout ViewLevel = 5 // visual rack grid with pod distribution
 )
 
+// Minimum terminal size constants
+const (
+	minTerminalWidth  = 60
+	minTerminalHeight = 20
+)
+
 // AppModel is the main Bubble Tea model for the game
 type AppModel struct {
 	state    GameState
 	styles   *Styles
 	width    int
 	height   int
+	tooSmall bool // terminal too small to render properly
 
 	// config
 	cfg *config.GameConfig
@@ -564,6 +571,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+		// Check for minimum terminal size
+		m.tooSmall = msg.Width < minTerminalWidth || msg.Height < minTerminalHeight
+		if m.tooSmall {
+			return m, nil // Skip layout calculations for tiny terminals
+		}
+
 		// Calculate aspect ratio for adaptive layout
 		aspectRatio := float64(msg.Width) / float64(msg.Height)
 		isLandscape := aspectRatio > 1.5  // Wide terminal
@@ -659,6 +672,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// global keys first
 		switch msg.String() {
 		case "ctrl+c":
+			// Cleanup K8s resources before quitting
+			m.cleanupK8sResources()
+			m.stopBenchmarkWorkers()
 			return m, tea.Quit
 		case "i", "?":
 			// Toggle info overlay (not during tutorial)
@@ -1426,8 +1442,16 @@ func (m AppModel) updateBattle(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m AppModel) updateGameOver(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", " ":
+		// Cleanup K8s resources before returning to menu
+		m.cleanupK8sResources()
+		m.stopBenchmarkWorkers()
 		m.state = StateMenu
 		m = NewAppModel() // reset game
+	case "q":
+		// Allow q to quit from game over screen
+		m.cleanupK8sResources()
+		m.stopBenchmarkWorkers()
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -1877,6 +1901,11 @@ func (m *AppModel) addBattleLog(msg string) {
 
 // View renders the current state
 func (m AppModel) View() string {
+	// Check for minimum terminal size
+	if m.tooSmall {
+		return m.renderTooSmall()
+	}
+
 	var view string
 
 	switch m.state {
@@ -3600,7 +3629,7 @@ func (m AppModel) renderGameOver() string {
 
 	stats := fmt.Sprintf("Turns: %d", m.turn)
 
-	hint := m.styles.Muted.Render("\n[enter] return to menu")
+	hint := m.styles.Muted.Render("\n[enter] return to menu  [q] quit")
 
 	return m.styles.App.Render(
 		lipgloss.JoinVertical(lipgloss.Center,
@@ -3611,6 +3640,18 @@ func (m AppModel) renderGameOver() string {
 			hint,
 		),
 	)
+}
+
+// renderTooSmall shows a warning when terminal is too small
+func (m AppModel) renderTooSmall() string {
+	warning := "Terminal too small!\n\n"
+	warning += fmt.Sprintf("Current: %dx%d\n", m.width, m.height)
+	warning += fmt.Sprintf("Minimum: %dx%d\n\n", minTerminalWidth, minTerminalHeight)
+	warning += "Please resize your terminal.\n"
+	warning += "[q] quit"
+
+	// Simple centered output for tiny terminals
+	return warning
 }
 
 // helper functions

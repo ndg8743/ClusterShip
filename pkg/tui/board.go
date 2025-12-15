@@ -317,11 +317,17 @@ func (b *Board) initPods(fleet *Fleet) {
 }
 
 // findRackForPod finds a suitable rack based on affinity
+// excludeRackID optionally excludes a rack (for rescheduling scenarios)
 func (b *Board) findRackForPod(fleet *Fleet, svc *game.Service) *game.Rack {
+	return b.findRackForPodExcluding(fleet, svc, "")
+}
+
+// findRackForPodExcluding finds a suitable rack, optionally excluding a specific rack
+func (b *Board) findRackForPodExcluding(fleet *Fleet, svc *game.Service, excludeRackID string) *game.Rack {
 	var racks []*game.Rack
 	for _, region := range fleet.Company.Regions {
 		for _, rack := range region.Racks {
-			if !rack.IsDestroyed && len(rack.Pods) < rack.Capacity {
+			if !rack.IsDestroyed && len(rack.Pods) < rack.Capacity && rack.ID != excludeRackID {
 				racks = append(racks, rack)
 			}
 		}
@@ -557,8 +563,9 @@ func (b *Board) tryReschedulePod(fleet *Fleet, pod *game.Pod) bool {
 
 	oldRackID := pod.RackID
 
-	newRack := b.findRackForPod(fleet, svc)
-	if newRack == nil || newRack.ID == oldRackID {
+	// Find a new rack, excluding the current rack
+	newRack := b.findRackForPodExcluding(fleet, svc, oldRackID)
+	if newRack == nil {
 		return false
 	}
 
