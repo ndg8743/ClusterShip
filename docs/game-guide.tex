@@ -955,16 +955,16 @@ Detected Tier & Extreme \\
 \hline
 \textbf{Component} & \textbf{Specification} \\
 \hline
-CPU & Apple M1 Pro (10 Cores) \\
+CPU & Apple M1 (8 Cores) \\
 RAM & 16 GB Unified Memory \\
-GPU & Apple M1 Pro (16-core GPU) \\
+GPU & Apple M1 (16 GB shared) \\
 \hline
 \multicolumn{2}{|c|}{\textbf{Software Environment}} \\
 \hline
-OS & macOS \\
+OS & macOS (darwin/arm64) \\
 Go Version & 1.24.11 \\
-GOMAXPROCS & 10 \\
-Detected Tier & Standard \\
+GOMAXPROCS & 8 \\
+Detected Tier & Advanced \\
 \hline
 \end{tabular}
 \caption{Laptop benchmark environment specifications}
@@ -979,13 +979,13 @@ Detected Tier & Standard \\
 \rowcolor{codebg}
 \textbf{Tier} & \textbf{Board Size} & \textbf{Creation} & \textbf{Memory} & \textbf{Lookups/sec} & \textbf{Status} \\
 \hline
-\cellcolor{green!20}Basic & 100 $\times$ 100 & --- & --- & --- & --- \\
+\cellcolor{green!20}Basic & 100 $\times$ 100 & 0.07 ms & 0.01 MB & 1.8M & \textcolor{green!60!black}{PASS} \\
 \hline
-\cellcolor{blue!20}Standard & 1,000 $\times$ 1,000 & --- & --- & --- & --- \\
+\cellcolor{blue!20}Standard & 1,000 $\times$ 1,000 & 1.25 ms & 0.21 MB & 7.3M & \textcolor{green!60!black}{PASS} \\
 \hline
-\cellcolor{orange!20}Advanced & 10,000 $\times$ 10,000 & --- & --- & --- & --- \\
+\cellcolor{orange!20}Advanced & 10,000 $\times$ 10,000 & 14.16 ms & 2.02 MB & 6.3M & \textcolor{green!60!black}{PASS} \\
 \hline
-\cellcolor{red!20}Extreme & 100,000 $\times$ 100,000 & --- & --- & --- & --- \\
+\cellcolor{red!20}Extreme & 100,000 $\times$ 100,000 & 81.98 ms & 19.11 MB & 7.7M & \textcolor{green!60!black}{PASS} \\
 \hline
 \end{tabular}
 \caption{Laptop performance benchmarks across all tiers}

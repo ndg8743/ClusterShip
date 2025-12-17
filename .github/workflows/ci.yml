@@ -45,11 +45,12 @@ jobs:
         if: runner.os == 'Windows'
         run: if (Test-Path .out) { Remove-Item -Recurse -Force .out }
         shell: pwsh
-      - run: go test -race -coverprofile=coverage.out ./...
+      - name: Run tests
+        run: go test -race -coverprofile=${{ runner.temp }}/coverage.txt ./...
       - if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage.out
+          file: ${{ runner.temp }}/coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
           flags: unittests

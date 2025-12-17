@@ -11,17 +11,13 @@
 # Output from go toolchain
 *.out
 coverage*.txt
-coverage.out
 .coverage
-coverage/
 
 # Build artifacts
 bin/
 build/
 dist/
 out/
-clustership
-clustership-*
 
 # Vendor directory
 vendor/
@@ -34,8 +30,4 @@ vendor/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Local MCP configuration
-.mcp.json
-
 

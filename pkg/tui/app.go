@@ -167,6 +167,7 @@ type AppModel struct {
 	compactMode      bool
 	viewW            int // viewport width in cells
 	viewH            int // viewport height in cells
+	sidebarW         int // sidebar width in chars
 	demoMode         bool
 	debugMode        bool // show all ships (no fog of war)
 	serviceViewIndex int  // which company's services to display (0=player, 1+=enemies)
@@ -585,26 +586,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		isPortrait := aspectRatio < 0.8
 
 		// Reserve space for UI - reduce sidebar for narrow terminals
-		var sidebarW, headerH int
+		var headerH int
 		if isNarrow {
 			// Narrow terminal: hide sidebar, board only
-			sidebarW = 0
+			m.sidebarW = 0
 			headerH = 4
 		} else if isSmall {
-			sidebarW = 20
+			m.sidebarW = 25
 			headerH = 5
 		} else if isLandscape {
-			sidebarW = 45
+			m.sidebarW = 40
 			headerH = 10
 		} else if isPortrait {
-			sidebarW = 30
+			m.sidebarW = 35
 			headerH = 8
 		} else {
-			sidebarW = 50
+			m.sidebarW = 45
 			headerH = 12
 		}
 
-		availableW := msg.Width - sidebarW
+		availableW := msg.Width - m.sidebarW
 		availableH := msg.Height - headerH
 
 		if availableW < 8 {
@@ -615,22 +616,28 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Each cell takes 2 chars (symbol + space)
+		// Use available space more efficiently - don't cap height artificially
 		var maxViewW, maxViewH int
 		if isNarrow {
 			maxViewW = 15
-			maxViewH = 10
+			maxViewH = availableH - 4
 		} else if isSmall {
 			maxViewW = 25
-			maxViewH = 15
+			maxViewH = availableH - 4
 		} else if isLandscape {
 			maxViewW = 80
-			maxViewH = 25
+			maxViewH = availableH - 6 // use most of available height
 		} else if isPortrait {
 			maxViewW = 35
-			maxViewH = 50
+			maxViewH = availableH - 4
 		} else {
 			maxViewW = 50
-			maxViewH = 35
+			maxViewH = availableH - 5
+		}
+
+		// Ensure reasonable minimums
+		if maxViewH < 10 {
+			maxViewH = 10
 		}
 
 		m.viewW = min(availableW/2, maxViewW)
@@ -3596,7 +3603,14 @@ func (m AppModel) renderServiceStatus() string {
 	// Panel navigation hint
 	panelHint := m.styles.Muted.Render(fmt.Sprintf("\n[tab] panel:%s [/] scroll", m.getPanelName()))
 
-	return m.styles.Sidebar.Render(
+	// Use dynamic width based on terminal size
+	sidebarStyle := m.styles.Sidebar.Width(m.sidebarW)
+	if m.sidebarW <= 0 {
+		// Hide sidebar in narrow mode
+		return ""
+	}
+
+	return sidebarStyle.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			serviceTitle, services,
 			"",
@@ -4441,9 +4455,9 @@ func (m *AppModel) getHoverInfo() string {
 				info += m.styles.Muted.Render(" [Already hit]")
 			}
 		} else {
-			// Unexplored enemy cell - show only that something is there
-			info = fmt.Sprintf("[ENEMY: %s] Unknown position - ", cellInfo.OwnerName)
-			info += m.styles.Warning.Render("FIRE to reveal!")
+			// Unexplored enemy cell - don't leak info about ship presence
+			// Show nothing (fog of war) unless debug mode or already hit
+			return ""
 		}
 	}
 
